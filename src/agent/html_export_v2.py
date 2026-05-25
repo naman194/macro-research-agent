@@ -560,7 +560,7 @@ def _idea_block(data) -> Dict[str, str]:
         top = {}
     ticker = top.get("ticker") or "n/a"
     name = top.get("name") or top.get("company") or ""
-    sector = top.get("sector") or "Top conviction"
+    sector = top.get("sector") or "Top-ranked filter output"
 
     pe = top.get("pe")
     roe = top.get("roe")
@@ -604,9 +604,9 @@ def _idea_block(data) -> Dict[str, str]:
     target_str = _rs(target)
 
     thesis = top.get("thesis") or sif.get("thesis") or (
-        f"Highest-conviction pick on our screen today. "
-        f"<strong>Composite score {_num(score, 2)}</strong> after structural overlay. "
-        f"<em>Quality compounder with screen-leading metrics.</em>"
+        f"Highest composite score in today's filter output. "
+        f"<strong>Score {_num(score, 2)}</strong> after structural overlay adjustment. "
+        f"<em>Screen-leading fundamental metrics across the universe.</em>"
     )
 
     bullets_src = top.get("bullets") or sif.get("bullets") or []
@@ -688,7 +688,7 @@ def _idea_block(data) -> Dict[str, str]:
         runner_body = "Only one name clears the structural-adjusted bar today. <em>Discipline over breadth.</em>"
 
     return {
-        "IDEA_STAMP": _h(f"Buy · Conviction 1 · {sector}"),
+        "IDEA_STAMP": _h(f"Filter Output · Top-Ranked · {sector}"),
         "IDEA_TITLE": _h(name or ticker),
         "IDEA_TICKER_ROW": tk_row,
         "IDEA_THESIS": thesis,
