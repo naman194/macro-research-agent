@@ -973,7 +973,7 @@ def _rebalance_block(data) -> Dict[str, str]:
             "REB_TICKER": _h("—"),
             "REB_SUB": _h("No rebalance event pending"),
             "REB_TAG": _h("Watch"),
-            "REB_BODY": "No imminent Nifty 50 rebalance event with high conviction.",
+            "REB_BODY": "No imminent Nifty 50 rebalance event flagged by the model today.",
             "REB_INFLOW": _h("n/a"),
             "REB_INFLOW_LABEL": _h("Est. passive inflow"),
         }
@@ -2577,7 +2577,7 @@ ${LOSERS_ROWS}
     <div class="sec-head">
       <div class="sec-num">§ 05 / 10</div>
       <h2 class="sec-title">Top Fundamental Idea</h2>
-      <div class="sec-kicker">Single Highest-Conviction GARP · Today</div>
+      <div class="sec-kicker">Top-Ranked Filter Output · GARP Framework · Today</div>
     </div>
 
     <div class="idea">
