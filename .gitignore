@@ -1,0 +1,11 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+data_cache/*.db
+data_cache/*.sqlite
+*.log
+.streamlit/secrets.toml
+.ipynb_checkpoints/

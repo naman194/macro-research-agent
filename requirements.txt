@@ -1,0 +1,19 @@
+streamlit>=1.30,<2.0
+pandas>=2.0,<3.0
+numpy>=1.24,<2.0
+plotly>=5.18,<6.0
+requests>=2.31,<3.0
+beautifulsoup4>=4.12,<5.0
+lxml>=4.9
+python-dotenv>=1.0
+anthropic>=0.40,<1.0
+nsepython>=2.95
+fredapi>=0.5
+wbdata>=1.0
+tenacity>=8.2
+markdown>=3.5
+reportlab>=4.0
+fpdf2>=2.7
+yfinance>=0.2.40
+matplotlib>=3.8
+# pandas-ta requires Python 3.12+; we compute indicators with pure pandas instead
