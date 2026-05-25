@@ -45,12 +45,12 @@ _AMBER = HexColor("#d97706")
 _TABLE_HEAD = HexColor("#e8eef5")
 _CARD_BG = HexColor("#f7f9fc")
 
-# Recommendation → badge color mapping
-_REC_COLORS = {
-    "BUY": _GREEN, "ACCUMULATE": HexColor("#369c4f"),
-    "HOLD": HexColor("#6b7280"),
-    "REDUCE": HexColor("#e07a3a"), "AVOID": _RED,
-    "OVERWEIGHT": _GREEN, "UNDERWEIGHT": _RED, "NEUTRAL": HexColor("#6b7280"),
+# Filter-status → badge color mapping (neutral observational language)
+# Replaces the old BUY/HOLD/AVOID recommendation badges.
+_STATUS_COLORS = {
+    "PASSES": _GREEN,
+    "BORDERLINE": HexColor("#6b7280"),
+    "FAILS": _RED,
 }
 
 
@@ -119,15 +119,13 @@ def _inline(md: str) -> str:
     # Inline code
     s = re.sub(r"`([^`]+)`", r'<font face="Courier" size="9">\1</font>', s)
 
-    # Recommendation labels → colored badges
-    # Matches patterns like "Recommendation: BUY" or "Rec: HOLD"
-    def _rec_repl(m):
-        rec = m.group(1).upper()
-        color = _REC_COLORS.get(rec, _MUTED)
+    # Filter-status labels → colored observation badges (neutral language)
+    def _status_repl(m):
+        status = m.group(1).upper()
+        color = _STATUS_COLORS.get(status, _MUTED)
         return (f'<font color="{color.hexval()}" face="Helvetica-Bold">'
-                f'&nbsp;■&nbsp;{rec}&nbsp;</font>')
-    s = re.sub(r"\b(BUY|ACCUMULATE|HOLD|REDUCE|AVOID|OVERWEIGHT|UNDERWEIGHT|NEUTRAL)\b",
-               _rec_repl, s)
+                f'&nbsp;■&nbsp;{status}&nbsp;</font>')
+    s = re.sub(r"\b(PASSES|BORDERLINE|FAILS)\b", _status_repl, s)
 
     return s
 
@@ -173,11 +171,12 @@ def _section_header(text: str) -> Table:
     return tbl
 
 
-def _recommendation_badge_inline(rec: str) -> str:
-    """Returns reportlab inline markup for a colored badge for BUY / HOLD / AVOID etc."""
-    color = _REC_COLORS.get(rec.upper(), _MUTED)
+def _status_badge_inline(status: str) -> str:
+    """Returns reportlab inline markup for a colored observation badge.
+    Status one of: PASSES / BORDERLINE / FAILS (neutral filter outcomes, not recommendations)."""
+    color = _STATUS_COLORS.get(status.upper(), _MUTED)
     return (f'<font color="{color.hexval()}" face="Helvetica-Bold" size="11">'
-            f'■ {rec}</font>')
+            f'■ {status}</font>')
 
 
 def _on_page(canvas, doc):

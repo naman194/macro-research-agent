@@ -111,6 +111,11 @@ def render() -> None:
 
     result = _scan(tuple(DEFAULT_UNIVERSE), require_uptrend)
     st.info(f"**Regime:** {result.get('regime', 'unknown')}")
+    st.warning(
+        "⚠ **Not investment advice.** Setups shown are output of mechanical filters. "
+        "Entry / Stop / Target are model references, not trade recommendations. "
+        "Verify independently before any action."
+    )
 
     with st.expander("Strategy methodology — what each filter does", expanded=False):
         for key, desc in (result.get("methodology") or {}).items():
@@ -199,8 +204,10 @@ def render() -> None:
 
     st.markdown("---")
     st.caption(
-        "**Position sizing rule of thumb:** risk 1-2% of capital per trade. "
-        "Position size = (capital × 1.5%) / risk_pct. "
-        "Trail stop to 20DMA after price moves +1R in your favor. "
-        "Exit T1 partial → let T2 run on remainder with break-even stop."
+        "**Reference notes only — not recommendations.** Setups described above are output of "
+        "mechanical pattern filters. Any decision to size, enter, or exit a position is the "
+        "reader's own; the author is not a SEBI-registered Research Analyst or Investment Adviser. "
+        "Industry-standard practice for swing setups is to risk 1-2% of capital per trade "
+        "(reference, not guidance), use ATR-based or swing-low stops, and trail with the 20DMA "
+        "as price moves in the trade's favour."
     )

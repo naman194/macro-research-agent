@@ -36,10 +36,11 @@ _LIGHT = "#f5f7fa"
 _CARD = "#ffffff"
 _BORDER = "#e2e8f0"
 
-_REC_COLORS = {
-    "BUY": _GREEN, "ACCUMULATE": "#369c4f",
-    "HOLD": _MUTED, "REDUCE": "#e07a3a", "AVOID": _RED,
-    "OVERWEIGHT": _GREEN, "UNDERWEIGHT": _RED, "NEUTRAL": _MUTED,
+# Filter-status colors (neutral observational language — not recommendations)
+_STATUS_COLORS = {
+    "PASSES": _GREEN,
+    "BORDERLINE": _MUTED,
+    "FAILS": _RED,
 }
 
 
@@ -49,16 +50,17 @@ def _b64_img(png_bytes: bytes, mime: str = "image/png") -> str:
     return f"data:{mime};base64,{base64.b64encode(png_bytes).decode()}"
 
 
-def _badge_html(rec: str) -> str:
-    color = _REC_COLORS.get(rec.upper(), _MUTED)
+def _badge_html(status: str) -> str:
+    color = _STATUS_COLORS.get(status.upper(), _MUTED)
     return (f'<span style="display:inline-block;padding:3px 10px;'
             f'background:{color};color:white;border-radius:4px;'
             f'font-weight:700;font-size:12px;letter-spacing:0.5px;'
-            f'vertical-align:middle;">{rec.upper()}</span>')
+            f'vertical-align:middle;">{status.upper()}</span>')
 
 
 def _replace_rec_badges(html: str) -> str:
-    pattern = r"\b(BUY|ACCUMULATE|HOLD|REDUCE|AVOID|OVERWEIGHT|UNDERWEIGHT|NEUTRAL)\b"
+    """Replace observational filter-status words with colored chips. Neutral, not recommendations."""
+    pattern = r"\b(PASSES|BORDERLINE|FAILS)\b"
     return re.sub(pattern, lambda m: _badge_html(m.group(1)), html)
 
 

@@ -34,8 +34,15 @@ st.set_page_config(
 
 st.title("Macro Research Agent")
 st.caption(
-    "Institutional-grade equity research for Indian markets — macro top-down, "
-    "framework-based screening, Claude-generated notes."
+    "Systematic research platform for Indian equities — macro top-down, "
+    "framework-based screening, AI-assisted synthesis."
+)
+st.warning(
+    "⚠ **This platform produces informational analysis, NOT investment advice or recommendations "
+    "to buy / sell / hold any security.** The author is not a SEBI-registered Research Analyst or "
+    "Investment Adviser. Filter outputs, composite scores, scenario ranges, and structural overlays "
+    "are model outputs — verify independently before any action. Past performance is not indicative "
+    "of future results."
 )
 
 # Top-of-page staleness banner: warn if any sector's risk overlay is >30 days old.

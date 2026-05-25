@@ -199,7 +199,7 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
     LIGHT = "#f5f7fa"
     BORDER = "#e2e8f0"
 
-    # Changes badges
+    # Filter-output changes vs prior session — observational language
     changes_html = ""
     nq = changes.get("newly_qualified", [])
     do = changes.get("dropped_out", [])
@@ -209,9 +209,9 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
         changes_html = f"""
         <div style="margin:16px 0;padding:14px;background:{LIGHT};border-radius:8px;
                     border-left:4px solid {BRAND};">
-            <div style="font-weight:700;color:{BRAND};margin-bottom:8px;">📌 Changes vs prior session</div>
-            <div style="color:{GREEN};margin-bottom:4px;">🟢 Newly qualified: {nq_str}</div>
-            <div style="color:{RED};">🔴 Dropped out: {do_str}</div>
+            <div style="font-weight:700;color:{BRAND};margin-bottom:8px;">📌 Filter output changes since prior session</div>
+            <div style="color:{GREEN};margin-bottom:4px;">🟢 Newly passing all 6 layers: {nq_str}</div>
+            <div style="color:{RED};">🔴 No longer passing: {do_str}</div>
         </div>
         """
 
@@ -219,9 +219,9 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
         picks_html = f"""
         <div style="padding:24px;text-align:center;color:{MUTED};
                     background:{LIGHT};border-radius:8px;">
-            <h3 style="color:{INK};margin:0 0 8px;">No High Conviction picks today</h3>
-            <p>Either macro regime is risk-off, or no name passed the 6-layer filter.
-               This is correct conservative behaviour — quality, not quantity.</p>
+            <h3 style="color:{INK};margin:0 0 8px;">No names passing today's filter</h3>
+            <p>Either macro regime is risk-off, or no name passed the 6-layer composite filter.
+               Filter output is a description of the screen state — not an instruction to act or hold cash.</p>
         </div>
         """
     else:
@@ -242,7 +242,7 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
                     </div>
                     <div style="background:{BRAND};color:white;padding:4px 10px;
                                 border-radius:4px;font-size:12px;font-weight:700;">
-                        Conviction {p.conviction_score:.0f}/100
+                        Composite Score {p.conviction_score:.0f}/100
                     </div>
                 </div>
                 <div style="display:flex;gap:14px;flex-wrap:wrap;
@@ -258,11 +258,11 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
                 <ul style="margin:6px 0;padding-left:22px;font-size:13px;color:{INK};">{why_bullets}</ul>
                 <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;
                             padding:10px;background:{LIGHT};border-radius:6px;font-size:13px;">
-                    <div><b>Entry:</b> ₹{p.entry:.1f}</div>
-                    <div><b>Stop loss:</b> ₹{p.stop_loss_suggested:.1f}
+                    <div><b>Last close:</b> ₹{p.entry:.1f}</div>
+                    <div><b>Model stop ref:</b> ₹{p.stop_loss_suggested:.1f}
                          <span style="color:{RED};">(-{stop_pct:.1f}%)</span></div>
-                    <div><b>Setup:</b> {p.technical_setup}</div>
-                    <div><b>Hold:</b> 6-12 months · <b>Size:</b> 3-5%</div>
+                    <div><b>Setup triggered:</b> {p.technical_setup}</div>
+                    <div style="color:{MUTED};font-size:11px;font-style:italic;">Model output — not a trade recommendation</div>
                 </div>
             </div>
             """)
@@ -273,7 +273,7 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>High Conviction Daily — {today_str}</title>
+    <title>Daily Filter Output — Composite Screen — {today_str}</title>
 </head>
 <body style="margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:{LIGHT};color:{INK};">
     <div style="max-width:760px;margin:0 auto;">
@@ -281,10 +281,10 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
                     padding:22px 28px;border-radius:10px 10px 0 0;
                     display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
             <div>
-                <h1 style="margin:0;font-size:22px;font-weight:700;">🎯 High Conviction Daily</h1>
+                <h1 style="margin:0;font-size:22px;font-weight:700;">📊 Daily Filter Output</h1>
                 <div style="font-size:10px;letter-spacing:1px;opacity:0.85;
                             margin-top:4px;font-weight:600;">
-                    INSTITUTIONAL RESEARCH · 6-LAYER COMPOSITE FILTER
+                    COMPOSITE SCREEN · 6-LAYER OBSERVATIONAL FRAMEWORK
                 </div>
             </div>
             <div style="font-size:13px;opacity:0.95;">{today_str}</div>
@@ -292,22 +292,33 @@ def generate_hc_email_html(picks: List[HighConvictionPick],
         <div style="background:white;padding:24px 28px;border-radius:0 0 10px 10px;
                     box-shadow:0 1px 4px rgba(0,0,0,0.04);">
             <p style="color:{MUTED};font-size:13px;margin:0 0 8px;">
-                {n} name(s) passed all six layers: fundamental quality (ROCE>=15, ROE>=15,
-                D/E<=0.5, profit CAGR 3y>=10), structural overlay (catalysts &gt;= 8 pts,
-                sector penalty &lt;= 22.5), technical setup confirmation, relative strength,
-                sentiment filter, macro regime.
+                {n} name(s) passed all six layers of the composite filter: fundamental quality
+                (ROCE>=15, ROE>=15, D/E<=0.5, profit CAGR 3y>=10), structural overlay
+                (catalysts &gt;= 8 pts, sector penalty &lt;= 22.5), technical setup confirmation,
+                relative strength, sentiment filter, macro regime. This is descriptive output —
+                not a list of recommendations.
             </p>
+            <div style="margin:14px 0;padding:12px;background:#fff8e6;border-left:4px solid #d97706;
+                        border-radius:4px;font-size:12px;color:{INK};line-height:1.55;">
+                <b>Not investment advice.</b> The author is not a SEBI-registered Research Analyst
+                or Investment Adviser. Filter outputs, composite scores, and structural overlays
+                are model outputs. Verify independently against primary sources before any action.
+                Past performance is not indicative of future results.
+            </div>
             {changes_html}
             <h2 style="font-size:17px;color:{BRAND};margin:24px 0 14px;
                        padding:6px 0 6px 12px;border-left:4px solid {BRAND};background:#fafbfd;">
-                Today's Picks ({n})
+                Names Passing All 6 Filter Layers Today ({n})
             </h2>
             {picks_html}
             <div style="margin-top:30px;padding-top:18px;border-top:1px solid {BORDER};
                         font-size:11px;color:{MUTED};text-align:center;">
-                <b>Recommended hold:</b> 6-12 months · <b>Position size:</b> 3-5% per pick<br/>
-                <b>Exit triggers:</b> -15% stop OR thesis breaks (overlay flips negative) OR hold horizon completes<br/><br/>
-                For institutional use only · Not investment advice · Verify all figures before action<br/>
+                <b>Note on the framework:</b> Filter is designed around a 6-12 month observation horizon and a -15% stop-loss reference.<br/>
+                <b>Filter exits:</b> -15% stop reference hit, structural overlay flips negative, or holding window completes.<br/><br/>
+                <b style="color:{INK};">This document is informational analysis, NOT investment advice or a recommendation
+                to buy, sell or hold any security. The author is not a SEBI-registered Research Analyst
+                or Investment Adviser. Verify all figures and assumptions independently before any action.
+                Past performance is not indicative of future results.</b><br/><br/>
                 Generated {datetime.utcnow().strftime("%Y-%m-%d %H:%M")} UTC by Macro Research Agent
             </div>
         </div>

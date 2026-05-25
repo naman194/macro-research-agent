@@ -198,46 +198,52 @@ def _ticker_cells(indices: List[Dict], cues: List[Dict]) -> Dict[str, str]:
 
 
 def _rec_rows(data) -> str:
-    """5-row Recommendation Summary table body."""
+    """Filter Output Summary table body — observational, NOT recommendations.
+    Topic / Observation / Read / Key level. Stance chip is filter-state, not buy/sell."""
     indices = data.indices_snapshot or []
     nifty = _find_idx(indices, "index", "Nifty 50")
     bn = _find_idx(indices, "index", "Bank Nifty")
     fno = data.fno_signals or []
     bn_fno = next((x for x in fno if "BANK" in str(x.get("symbol", "")).upper()), None)
 
-    nifty_close = nifty.get("close") if nifty else None
-    nifty_dma = "n/a — verify"   # placeholder; 200DMA not in DailyNoteData
+    nifty_dma = "n/a — verify"
     regime = (data.swing_setups or {}).get("regime") or "unknown"
-    regime_stance = "risk" if "off" in regime.lower() else ("buy" if "on" in regime.lower() else "neutral")
-    regime_label = "Risk-Off" if "off" in regime.lower() else ("Risk-On" if "on" in regime.lower() else "Neutral")
+    # Neutral observation chips (CSS classes still match buy/hold/sell/neutral
+    # since they only carry color, but the LABELS are observational)
+    if "off" in regime.lower():
+        regime_chip_cls = "sell"; regime_label = "Risk-Off Regime"
+    elif "on" in regime.lower():
+        regime_chip_cls = "buy"; regime_label = "Risk-On Regime"
+    else:
+        regime_chip_cls = "neutral"; regime_label = "Neutral Regime"
 
-    # Top idea
+    # Top filter output
     sif = data.stock_in_focus or {}
     top = (data.top_garp or data.top_quality_value or [{}])[0]
     top_ticker = sif.get("ticker") or top.get("ticker") or "n/a"
     top_name_short = sif.get("name") or top.get("name") or ""
 
     rows = []
-    # Row 1: Index Regime
+    # Row 1: Index Regime — observation
     rows.append(
         f'''        <tr>
           <td class="topic">Index Regime <small>Nifty vs 200DMA</small></td>
-          <td><span class="rec-chip {regime_stance}">{_h(regime_label)}</span></td>
-          <td>{"Trim leveraged longs into strength. Re-engage only on clean 200DMA reclaim with breadth confirmation." if regime_stance=="risk" else "Stay constructive but selective. Add only with breadth confirmation and clean trend."}</td>
+          <td><span class="rec-chip {regime_chip_cls}">{_h(regime_label)}</span></td>
+          <td>{"Trend-following systems suppress long signals when Nifty trades below 200DMA. Breadth confirmation typically precedes regime change." if regime_chip_cls=="sell" else "Trend filter is intact. Historical pattern: positive setups fire more frequently in this regime."}</td>
           <td class="num-cell">200DMA · {_h(nifty_dma)}</td>
         </tr>'''
     )
-    # Row 2: Top idea
+    # Row 2: Top filter output
     if top_ticker and top_ticker != "n/a":
         rows.append(
             f'''        <tr>
-          <td class="topic">{_h(top_ticker)} <small>{_h(top_name_short) or "Top conviction"}</small></td>
-          <td><span class="rec-chip buy">Buy</span></td>
-          <td>Highest-conviction screen pick today. Sizing 2–3% of portfolio; respect stop guidance.</td>
+          <td class="topic">{_h(top_ticker)} <small>{_h(top_name_short) or "Highest filter score"}</small></td>
+          <td><span class="rec-chip buy">PASSES</span></td>
+          <td>Highest adjusted composite score in today's filter output. See §05 for the full data breakdown including bear considerations.</td>
           <td class="num-cell">See §05</td>
         </tr>'''
         )
-    # Row 3: Bank Nifty F&O
+    # Row 3: Bank Nifty F&O positioning data
     if bn_fno:
         spot = bn_fno.get("underlying")
         mp = bn_fno.get("max_pain")
@@ -246,38 +252,38 @@ def _rec_rows(data) -> str:
         spot_str = _int(spot) if spot else "n/a"
         rows.append(
             f'''        <tr>
-          <td class="topic">Bank Nifty <small>Into nearest expiry</small></td>
-          <td><span class="rec-chip {_stance_chip(sent)}">{_h(sent.title())}</span></td>
-          <td>Max-pain {_int(mp)} ({_pct(mp_d,2)} to spot). Spot {spot_str}. Track for pin/gravitational risk.</td>
+          <td class="topic">Bank Nifty F&amp;O <small>Into nearest expiry</small></td>
+          <td><span class="rec-chip {_stance_chip(sent)}">{_h(sent.title())} OI</span></td>
+          <td>Max-pain {_int(mp)} ({_pct(mp_d,2)} to spot). Spot {spot_str}. OI structure shown is descriptive; historical pin/gravitational behaviour varies.</td>
           <td class="num-cell">Spot · {spot_str}</td>
         </tr>'''
         )
-    # Row 4: Sector laggards
+    # Row 4: Sector laggards data
     sectoral = [i for i in indices if i.get("index") not in ("Nifty 50", "Sensex", "Bank Nifty")]
     sectoral.sort(key=lambda x: float(x.get("change_pct") or 0))
     if len(sectoral) >= 2:
         l1, l2 = sectoral[0], sectoral[1]
         rows.append(
             f'''        <tr>
-          <td class="topic">{_h(l1["index"])} / {_h(l2["index"])} <small>Sector laggards</small></td>
-          <td><span class="rec-chip neutral">Avoid Chase</span></td>
-          <td>{_h(l1["index"])} {_pct(l1.get("change_pct"))} / {_h(l2["index"])} {_pct(l2.get("change_pct"))} on the session. Wait for drawdown before re-entry.</td>
+          <td class="topic">{_h(l1["index"])} / {_h(l2["index"])} <small>Sector laggards yesterday</small></td>
+          <td><span class="rec-chip neutral">Underperformers</span></td>
+          <td>{_h(l1["index"])} {_pct(l1.get("change_pct"))} / {_h(l2["index"])} {_pct(l2.get("change_pct"))} on the session. Data point only.</td>
           <td class="num-cell">—</td>
         </tr>'''
         )
-    # Row 5: Brent / commodities note
+    # Row 5: Brent / commodity observation
     brent = _find_idx(data.global_cues or [], "cue", "Brent") or _find_idx(data.global_cues or [], "cue", "BZ=F")
     if brent:
         bp = brent.get("change_pct") or 0
-        stance = "buy" if bp < 0 else "sell"
-        verdict = "Positive" if bp < 0 else "Watch"
-        rationale = ("Crude relief is meaningful for OMCs, paints, aviation. Negative read-through for ONGC, Oil India."
+        chip_cls = "buy" if bp < 0 else "sell"
+        label = "Crude Easing" if bp < 0 else "Crude Firming"
+        rationale = ("Crude relief historically correlates with margin tailwind for OMCs, paints, aviation; pressure on upstream ONGC, Oil India."
                      if bp < 0
-                     else "Crude firmness pressures OMCs, paints, aviation margins; tailwind ONGC/Oil India.")
+                     else "Crude firmness historically pressures OMCs, paints, aviation margins; tailwind to upstream ONGC, Oil India.")
         rows.append(
             f'''        <tr>
-          <td class="topic">OMCs & Aviation <small>Brent {_pct(bp)}</small></td>
-          <td><span class="rec-chip {stance}">{verdict}</span></td>
+          <td class="topic">Energy Complex <small>Brent {_pct(bp)}</small></td>
+          <td><span class="rec-chip {chip_cls}">{label}</span></td>
           <td>{rationale}</td>
           <td class="num-cell">Brent · ${_num(brent.get("close"),2)}</td>
         </tr>'''
@@ -1048,7 +1054,7 @@ def _data_for_template(data, kpi_data: Optional[Dict] = None, today_str: Optiona
     out.update(_ticker_cells(data.indices_snapshot or [], data.global_cues or []))
 
     # Summary head + rows
-    out["SUMHEAD_LEFT"] = _h("Today's Actionable Summary")
+    out["SUMHEAD_LEFT"] = _h("Today's Filter Output Summary")
     out["SUMHEAD_MID"] = _h(f"Pre-Open · {today_str} · 07:45 IST")
     out["SUMHEAD_RIGHT"] = _h(f"As of {today_str} close")
     out["REC_ROWS"] = _rec_rows(data)
@@ -1089,13 +1095,16 @@ def _data_for_template(data, kpi_data: Optional[Dict] = None, today_str: Optiona
         "Sector indices: NSE thematic indices, level changes reported on a same-day basis."
     )
     out["DIS_BODY"] = (
-        "This document is prepared by the Macro Research Agent for the exclusive use of "
-        "professional clients and internal recipients. It does not constitute investment advice, "
-        "an offer, or a solicitation to buy or sell any security. All figures sourced from yfinance, "
-        "NSE provisional flows, NSE corporate events feed, screener.in fundamentals, FRED/IMF/WB macro, "
-        "RBI/SEBI public filings, GDELT news sentiment — recipients must verify against primary "
-        "sources before acting. Past performance is not indicative of future results. Levels, targets "
-        "and stops reflect the desk's view at the time of writing and are subject to change without notice."
+        "This document is informational analysis prepared by the Macro Research Agent. "
+        "<strong>It is NOT investment advice, NOT a recommendation to buy, sell or hold any "
+        "security, and NOT a research report under SEBI (Research Analysts) Regulations, 2014.</strong> "
+        "The author is not a SEBI-registered Research Analyst or Investment Adviser. Filter outputs, "
+        "composite scores, model scenario ranges, and structural overlays presented are mechanical "
+        "model outputs based on public data — they describe what the data shows, not what the reader "
+        "should do. All figures sourced from yfinance, NSE provisional flows, NSE corporate events "
+        "feed, screener.in fundamentals, FRED/IMF/WB macro, RBI/SEBI public filings, GDELT news "
+        "sentiment — recipients must verify against primary sources before any decision. "
+        "Past performance is not indicative of future results."
     )
     out["DIS_SOURCES"] = _h("NSE · BSE · yfinance · RBI · SEBI · GDELT")
     out["DIS_DIST"] = _h("Internal · Tier-1 clients")

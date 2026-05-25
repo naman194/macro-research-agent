@@ -29,10 +29,16 @@ def _run(universe: tuple, require_uptrend: bool):
 
 
 def render() -> None:
-    st.header("🎯 High Conviction — Today's Composite Picks")
+    st.header("📊 Composite Screen — Today's Filter Output")
     st.caption(
-        "Strictest filter on the platform. A name only fires if ALL six layers align. "
-        "Designed for 60%+ hit rate on 6-12 month holds. Quality, not quantity."
+        "Strictest filter on the platform. A name appears here only if it passes ALL six layers. "
+        "Designed around a 6-12 month observation horizon. **This is descriptive filter output, "
+        "not a recommendation to buy or hold.**"
+    )
+    st.warning(
+        "⚠ **Not investment advice.** Filter outputs and composite scores are model outputs. "
+        "The author is not a SEBI-registered Research Analyst or Investment Adviser. "
+        "Verify independently before any action."
     )
 
     # Premium status indicator
@@ -78,19 +84,19 @@ def render() -> None:
     st.markdown("---")
     if not picks:
         st.info(
-            "🚦 **No High Conviction picks today.** Macro risk-off, no name passed "
-            "multi-layer filter, or technical setups haven't fired."
+            "🚦 **No names passed today's composite filter.** Macro regime risk-off, "
+            "no name passed multi-layer criteria, or technical setups haven't fired."
         )
     else:
-        st.success(f"✓ **{len(picks)} High Conviction pick(s)** — multi-layer-aligned.")
+        st.success(f"✓ **{len(picks)} name(s) passing all 6 filter layers today.**")
         for p in picks:
             with st.expander(
-                f"🎯 **{p.ticker}** · {p.name} · "
-                f"Conviction **{p.conviction_score:.1f}/100** · "
+                f"📊 **{p.ticker}** · {p.name} · "
+                f"Composite score **{p.conviction_score:.1f}/100** · "
                 f"Sector: {p.sector}",
                 expanded=True,
             ):
-                st.markdown("**Why this picked:**")
+                st.markdown("**Why the filter highlights this name:**")
                 for w in p.why_high_conviction:
                     st.markdown(f"- {w}")
                 cols = st.columns(6)
@@ -102,10 +108,10 @@ def render() -> None:
                 cols[5].metric("Mkt cap (Cr)", f"{p.market_cap_cr:,.0f}")
                 scols = st.columns(5)
                 scols[0].metric("Net overlay", f"{p.net_overlay:+.1f}")
-                scols[1].metric("Entry", f"₹{p.entry:.1f}")
-                scols[2].metric("Stop loss", f"₹{p.stop_loss_suggested:.1f}",
+                scols[1].metric("Last close", f"₹{p.entry:.1f}")
+                scols[2].metric("Model stop ref", f"₹{p.stop_loss_suggested:.1f}",
                                f"-{(1 - p.stop_loss_suggested/p.entry)*100:.1f}%")
-                scols[3].metric("Tech setup", p.technical_setup)
+                scols[3].metric("Setup triggered", p.technical_setup)
                 if scols[4].button("➕ Add to watchlist", key=f"wl_{p.ticker}"):
                     if watchlist_add(p.ticker):
                         st.toast(f"Added {p.ticker} to watchlist")

@@ -66,9 +66,18 @@ to clarify. Quote the exact exchange if possible. This is where the real signal 
 Pull 3-5 short verbatim quotes that capture the message. Format:
 > "Quote here" — Speaker (CEO / CFO / EVP etc.)
 
-## Implication for our view
-2-3 bullets. Does this support BUY / ACCUMULATE / HOLD / REDUCE / AVOID? Are estimates \
-likely to move? Is the multiple at risk of de-rating / re-rating?
+## Read for the model
+2-3 bullets describing what this transcript implies for the structural picture. Does \
+management commentary support or weaken what our screen identifies? Are consensus estimates \
+likely to move based on guidance? Is the historical valuation band still a reasonable anchor \
+or is there evidence of structural re-rating? Use observational language ("transcript suggests", \
+"guidance implies", "data points to"), not prescriptive ("buy", "sell", "we recommend").
+
+## Disclaimer
+Reproduce verbatim: "**This analysis is informational, NOT investment advice or a \
+recommendation to buy, sell or hold any security. The author is not a SEBI-registered Research \
+Analyst or Investment Adviser. Verify all quotes and figures against the official company \
+transcript before any action.**"
 
 HARD RULES:
 - **No fabrication.** Only use what's in the transcript text.
