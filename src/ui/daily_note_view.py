@@ -9,6 +9,7 @@ from src.agent.daily_note import DailyNoteAgent, gather
 from src.agent.html_export import markdown_to_html
 from src.agent.html_export_v2 import render_brief_v2
 from src.agent.pdf_export import markdown_to_pdf
+from src.agent.pdf_export_v2 import available as weasyprint_available, html_to_pdf
 from src.agent.visuals import (
     global_cues_strip_png,
     kpi_strip_png,
@@ -177,16 +178,7 @@ def render() -> None:
             1,
         )
 
-    # PDF
-    try:
-        pdf_bytes = markdown_to_pdf(note_for_export, embed_images=embed)
-        pdf_ok = True
-    except Exception as exc:
-        pdf_bytes = b""
-        pdf_ok = False
-        st.error(f"PDF render failed: {exc}")
-
-    # HTML — v2 (Claude Design) is the default
+    # HTML — v2 (Claude Design) is the canonical client deliverable; render FIRST so PDF can reuse
     try:
         html_str = render_brief_v2(
             data,
@@ -198,6 +190,26 @@ def render() -> None:
         html_str = ""
         html_ok = False
         st.error(f"HTML (v2) render failed: {exc}")
+
+    # PDF — try WeasyPrint first (renders v2 HTML pixel-faithfully); fall back to
+    # legacy reportlab if WeasyPrint or its system libs aren't available locally.
+    pdf_bytes = b""
+    pdf_ok = False
+    pdf_engine = "none"
+    if html_ok and weasyprint_available():
+        try:
+            pdf_bytes = html_to_pdf(html_str)
+            pdf_ok = True
+            pdf_engine = "weasyprint_v2"
+        except Exception as exc:
+            st.caption(f"_(WeasyPrint PDF render failed, falling back: {exc})_")
+    if not pdf_ok:
+        try:
+            pdf_bytes = markdown_to_pdf(note_for_export, embed_images=embed)
+            pdf_ok = True
+            pdf_engine = "reportlab_legacy"
+        except Exception as exc:
+            st.error(f"PDF render failed (both engines): {exc}")
 
     # Legacy HTML (markdown-based, kept as fallback)
     try:
@@ -214,12 +226,17 @@ def render() -> None:
     fname_base = f"India_Morning_Brief_{date.today().isoformat()}"
     c1, c2, c3 = st.columns(3)
     if pdf_ok:
+        is_v2 = pdf_engine == "weasyprint_v2"
         c1.download_button(
-            "📄 PDF — for desk",
+            ("📄 PDF — Claude Design" if is_v2 else "📄 PDF — basic layout"),
             data=pdf_bytes, file_name=f"{fname_base}.pdf",
             mime="application/pdf", width="stretch",
-            help="Branded PDF with header band, KPI styling, embedded charts, "
-                 "page numbers + disclaimer footer. Send to institutional clients.",
+            help=("Pixel-faithful Claude Design PDF (rendered via WeasyPrint from the same HTML)."
+                  if is_v2 else
+                  "Fallback PDF using basic reportlab layout. WeasyPrint not available locally "
+                  "(no system cairo/pango libs). Use the HTML + browser-print workflow below for "
+                  "the Claude Design PDF on this machine. On Streamlit Cloud, the team gets v2 PDF "
+                  "automatically."),
         )
     if html_ok:
         c2.download_button(
@@ -235,6 +252,16 @@ def render() -> None:
         mime="text/markdown", width="stretch",
         help="Plain markdown — edit in any text editor before sending.",
     )
+
+    # If we're on legacy PDF (local without WeasyPrint), show the browser-print workflow
+    if pdf_ok and pdf_engine != "weasyprint_v2":
+        st.info(
+            "💡 **For a Claude-Design PDF on this Mac:** download the **HTML** above → open it in "
+            "Safari or Chrome → press **`Cmd+P`** → Destination: **Save as PDF** → Paper size: "
+            "**Tabloid** (or A3) → **tick 'Background graphics'** → Save. "
+            "Gives pixel-perfect editorial PDF identical to the design. "
+            "(Your Streamlit Cloud deployment will produce this PDF automatically once it redeploys.)"
+        )
 
     # In-app preview of the v2 HTML
     if html_ok:
