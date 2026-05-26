@@ -77,12 +77,21 @@ def _init_db():
 # ---------------- Refresh status ----------------
 
 def last_refreshed(sector: str) -> Optional[str]:
-    """Return ISO date of most recent applied refresh for a sector."""
+    """Return ISO date of the most recent refresh activity for a sector.
+
+    Counts any change that was proposed, approved, or applied (i.e. anything
+    NOT rejected). Originally this only counted 'applied' — which created a
+    workflow trap because the UI approve flow stops at 'approved' (the
+    actual file edit was manual). For the staleness banner to be useful,
+    'I looked at this sector recently' is the right signal, not
+    'I edited the source file recently'.
+    """
     _init_db()
     with _conn() as c:
         row = c.execute(
-            "SELECT MAX(applied_at) AS last FROM refresh_log "
-            "WHERE sector = ? AND status = 'applied'", (sector,)
+            "SELECT MAX(COALESCE(applied_at, proposed_at)) AS last FROM refresh_log "
+            "WHERE sector = ? AND status IN ('proposed', 'approved', 'applied')",
+            (sector,)
         ).fetchone()
     return row["last"] if row and row["last"] else None
 
