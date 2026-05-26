@@ -171,6 +171,34 @@ embed marker `{IMG:focus_chart}`. Add 2-3 lines AFTER the supplied block on:
 
 DO NOT include "position-sizing guidance" or "recommended size" — those are recommendations.
 
+## Earnings This Week — names reporting in next 5 days
+ONLY include this section if the supplied `earnings_preview` payload is non-empty. \
+Otherwise skip the heading entirely. For each name (up to 6), produce one block:
+
+**TICKER (Company) — reports {event_date} ({days_out} days)**
+- *Last quarter ({last_quarter_period}):* {last_quarter_summary} — note whether momentum \
+is accelerating, stable, or decelerating
+- *Mgmt last guidance:* if `prior_guidance_sample` supplied, quote it; else "no archived \
+guidance"
+- *Track record:* if `credibility_score` supplied, surface it as "credibility X/100 — \
+{mgmt_summary[:80]}"; else "no prior calls in archive"
+- *What to watch:* one line — the specific metric the market is pricing in (revenue \
+acceleration / margin recovery / guidance hold / capex unlock). Use observational \
+language, not advice.
+
+Mark names with `priority: true` (i.e. they passed our screens) with a 🎯 prefix — \
+those are the ones where our framework already has a view.
+
+## Ownership Inflection
+ONLY include if `ownership_inflection` payload is non-empty. For each name (up to 8), one line:
+
+**TICKER** — Promoter {±X.Xpp QoQ → now Y%} · FII {±X.Xpp → now Y%} · DII {±X.Xpp → now Y%}
+
+Suppress holders with no material move. Promoter ADDING is rarest and most positive — \
+flag with ⭐. FIIs increasing >2pp on a single quarter is a meaningful institutional \
+vote — flag with ⬆. Promoter REDUCING needs context (could be planned dilution for QIP, \
+or distribution) — neutral marker unless size is large (>5pp).
+
 ## Macro Calendar — Next 14 Days
 List the high-importance events from the supplied calendar payload first (RBI MPC, Fed FOMC, \
 India CPI, GDP). One line each. End with a 1-line "what we're watching most" view.
@@ -265,11 +293,140 @@ class DailyNoteData:
     forensic_watch: List[Dict[str, Any]] = field(default_factory=list)
     # Sectoral flow breakdown — derived from block+bulk+promoter aggregation
     sector_flows: List[Dict[str, Any]] = field(default_factory=list)
+    # Earnings preview — names with results in next 5 days
+    earnings_preview: List[Dict[str, Any]] = field(default_factory=list)
+    # Ownership inflection — names with material QoQ shareholding deltas
+    ownership_inflection: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
 
 THEMES = ["India economy", "RBI monetary policy", "Indian rupee",
           "FII outflows", "Indian banks", "India inflation"]
+
+
+def _build_earnings_preview(today: date, days_ahead: int = 5,
+                              priority_tickers: Optional[set] = None,
+                              max_results: int = 6) -> List[Dict[str, Any]]:
+    """Names with results scheduled in next N days, enriched with last-quarter
+    delivery + management's prior guidance + credibility score.
+
+    Filtered to names in DEFAULT_UNIVERSE (~150 covered names). Priority tickers
+    (current screen winners) surfaced first. Names outside DEFAULT_UNIVERSE are
+    dropped — institutional reader doesn't care about every small-cap reporting.
+    """
+    from src.config import DEFAULT_UNIVERSE
+    from src.screens.special_situations import NSEEventsAdapter
+    from src.data.screener import ScreenerAdapter
+    from datetime import datetime, timedelta
+
+    universe_set = {t.upper() for t in DEFAULT_UNIVERSE}
+
+    try:
+        df = NSEEventsAdapter().all_events()
+    except Exception as exc:
+        log.warning("earnings preview events fetch failed: %s", exc)
+        return []
+    if df is None or df.empty:
+        return []
+    if "purpose" not in df.columns or "date" not in df.columns:
+        return []
+
+    # Filter to results-related events
+    rs = df[df["purpose"].fillna("").str.contains("result|financial result",
+                                                    case=False, regex=True)]
+    if rs.empty:
+        return []
+
+    # Parse dates — NSE uses "DD-Mon-YYYY"
+    def _parse_d(s: str):
+        for fmt in ("%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(str(s), fmt).date()
+            except Exception:
+                pass
+        return None
+
+    cutoff_min = today
+    cutoff_max = today + timedelta(days=days_ahead)
+    rows = []
+    priority = {t.upper() for t in (priority_tickers or set())}
+    for _, r in rs.iterrows():
+        d = _parse_d(r.get("date"))
+        if d is None or d < cutoff_min or d > cutoff_max:
+            continue
+        sym = str(r.get("symbol") or "").upper()
+        if not sym:
+            continue
+        # Restrict to covered universe — institutional reader cares about names we track
+        if sym not in universe_set:
+            continue
+        rows.append({
+            "ticker": sym,
+            "company": r.get("company") or sym,
+            "event_date": d.isoformat(),
+            "days_out": (d - today).days,
+            "purpose": r.get("purpose") or "",
+            "priority": sym in priority,
+        })
+
+    if not rows:
+        return []
+
+    # Dedupe — keep earliest date per ticker (NSE often lists same name on multiple dates)
+    by_ticker: Dict[str, Dict[str, Any]] = {}
+    for r in sorted(rows, key=lambda x: x["event_date"]):
+        if r["ticker"] not in by_ticker:
+            by_ticker[r["ticker"]] = r
+    rows = list(by_ticker.values())
+
+    # Sort: priority first (then by date asc, then by ticker alpha)
+    rows.sort(key=lambda x: (not x["priority"], x["event_date"], x["ticker"]))
+    rows = rows[:max_results]
+
+    # Enrich with last quarter + credibility
+    screener = ScreenerAdapter()
+    for row in rows:
+        sym = row["ticker"]
+        # Last quarter delivery
+        try:
+            qr = screener.quarterly_results(sym)
+            if not qr.get("error"):
+                summary = []
+                for label in ("revenue", "ebitda", "net_profit", "eps"):
+                    m = qr.get(label)
+                    if not m:
+                        continue
+                    val = m.get("latest_value")
+                    yoy = m.get("yoy_pct")
+                    if val is not None and yoy is not None:
+                        summary.append(
+                            f"{label} {val} ({yoy:+.0f}% YoY)"
+                        )
+                row["last_quarter_summary"] = "; ".join(summary) if summary else None
+                row["last_quarter_period"] = (qr.get("revenue") or {}).get("latest_period")
+        except Exception as exc:
+            log.warning("earnings preview last-quarter %s failed: %s", sym, exc)
+
+        # Concall credibility (if archived)
+        try:
+            from src.agent.concall_history import credibility_report
+            r = credibility_report(sym)
+            if r.records:
+                row["credibility_score"] = r.credibility_score
+                row["mgmt_summary"] = r.summary[:200]
+                # Latest stored guidance
+                latest = r.records[0] if r.records else None
+                if latest and latest.guidance:
+                    g = latest.guidance[0]
+                    row["prior_guidance_sample"] = (
+                        f"{g.get('label') or g.get('metric')}: "
+                        f"{g.get('value')} {g.get('period') or ''} "
+                        f"({g.get('direction')})"
+                    )
+        except Exception:
+            pass
+
+    return rows
 
 
 def _aggregate_sector_flows(deals_sum: Dict[str, Any],
@@ -619,6 +776,21 @@ def gather(progress: Optional[Callable[[str], None]] = None,
         "Sector flows", errors, []
     )
 
+    _step("Building earnings preview…")
+    # Priority tickers = anything in qv/garp/special — names the reader cares about
+    priority_tix: set = set()
+    for p in (qv_picks or []) + (garp_picks or []):
+        if p.get("ticker"):
+            priority_tix.add(p["ticker"].upper())
+    earnings_preview: List[Dict[str, Any]] = _safe(
+        lambda: _build_earnings_preview(date.today(), days_ahead=5,
+                                          priority_tickers=priority_tix),
+        "Earnings preview", errors, []
+    )
+
+    # Note: ownership_inflection is built AFTER Phase 3 enrichment, since it
+    # uses ticker_signals (which is populated in Phase 3). See below.
+
     # ====================================================================
     # Phase 3 — enrich each pick with multi-signal conviction + brief-delta
     # ====================================================================
@@ -836,6 +1008,49 @@ def gather(progress: Optional[Callable[[str], None]] = None,
     except Exception as exc:
         log.warning("brief history save failed: %s", exc)
 
+    # ====================================================================
+    # Ownership inflection — material QoQ shareholding moves on top picks
+    # ====================================================================
+    _step("Detecting ownership inflection…")
+    ownership_inflection: List[Dict[str, Any]] = []
+    # Material thresholds for surfacing (in percentage POINTS, not pct)
+    PROMOTER_THRESHOLD = 0.5    # ±0.5pp
+    FII_DII_THRESHOLD = 1.0     # ±1.0pp
+    for ticker, ts in ticker_signals.items():
+        moves = []
+        prom_d = ts.get("promoters_qoq_change")
+        fii_d = ts.get("fiis_qoq_change")
+        dii_d = ts.get("diis_qoq_change")
+        if prom_d is not None and abs(prom_d) >= PROMOTER_THRESHOLD:
+            moves.append({
+                "holder": "Promoter",
+                "qoq_delta_pp": round(float(prom_d), 2),
+                "current_pct": ts.get("promoter_pct"),
+                "direction": "up" if prom_d > 0 else "down",
+            })
+        if fii_d is not None and abs(fii_d) >= FII_DII_THRESHOLD:
+            moves.append({
+                "holder": "FII",
+                "qoq_delta_pp": round(float(fii_d), 2),
+                "current_pct": ts.get("fii_pct"),
+                "direction": "up" if fii_d > 0 else "down",
+            })
+        if dii_d is not None and abs(dii_d) >= FII_DII_THRESHOLD:
+            moves.append({
+                "holder": "DII",
+                "qoq_delta_pp": round(float(dii_d), 2),
+                "current_pct": ts.get("dii_pct"),
+                "direction": "up" if dii_d > 0 else "down",
+            })
+        if moves:
+            ownership_inflection.append({
+                "ticker": ticker,
+                "moves": moves,
+                "total_magnitude": sum(abs(m["qoq_delta_pp"]) for m in moves),
+            })
+    # Largest moves first
+    ownership_inflection.sort(key=lambda r: -r["total_magnitude"])
+
     _step("✓ All data gathered")
 
     # All Phase 1 outputs come straight from the parallel dict — no re-running.
@@ -870,6 +1085,8 @@ def gather(progress: Optional[Callable[[str], None]] = None,
         stock_in_focus=sif,
         forensic_watch=forensic_watch,
         sector_flows=sector_flows,
+        earnings_preview=earnings_preview,
+        ownership_inflection=ownership_inflection,
         errors=errors,
     )
 
@@ -1005,6 +1222,21 @@ class DailyNoteAgent:
             "**Sector flow read**: 'IT received ₹X Cr (top names: TCS, INFY); Banks distributed "
             "₹Y Cr (top names: KOTAK)'.",
             "```json", json.dumps(d.sector_flows[:10], indent=2, default=str), "```",
+            "",
+            "## Earnings Preview — Results scheduled in next 5 trading days",
+            "Per-name preview: last-quarter delivery (rev/EBITDA/EPS YoY), and where archived, "
+            "management's prior guidance + credibility score. Use this to populate an "
+            "**Earnings This Week** section listing names by date with: last quarter beat/miss "
+            "pattern, what's expected based on prior guidance, and any management credibility "
+            "concerns. Priority names (those passing our screens) get extra emphasis.",
+            "```json", json.dumps(d.earnings_preview, indent=2, default=str), "```",
+            "",
+            "## Ownership Inflection — material QoQ shareholding moves",
+            "Tickers with non-trivial promoter/FII/DII shifts last quarter. Promoter ±0.5pp, "
+            "FII/DII ±1.0pp. A promoter ADDING is a high-signal positive (very rare); FIIs "
+            "increasing 1pp+ is a meaningful institutional vote. Surface as **Ownership "
+            "Inflection** section with one line per name.",
+            "```json", json.dumps(d.ownership_inflection, indent=2, default=str), "```",
             "",
             "## Stock in Focus (highest-scoring screen candidate)",
             "```json", json.dumps({k: v for k, v in (d.stock_in_focus or {}).items()
