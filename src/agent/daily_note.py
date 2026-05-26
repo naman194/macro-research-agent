@@ -73,6 +73,11 @@ not a recommendation).
 - Breadth: advance/decline ratio.
 - **FII/DII flows** — quote the supplied Rs Cr numbers explicitly. Describe divergences \
 factually (e.g. "DII absorbed FII selling — historically a support pattern, not always reliable").
+- **Sector flow read (NEW — buyside-critical)** — from the supplied `sector_flows` payload, \
+surface the top 3-4 sectors by absolute net Cr flow. Format: "**Sector flow read**: IT \
+received +₹X Cr (top names: TCS, INFY); Banks distributed -₹Y Cr (top names: KOTAK)". This \
+is derived from actual block + bulk + promoter prints over the last 14 days — every number \
+is data-backed, not inferred. Skip the row if `sector_flows` is empty.
 
 ## Top Gainers / Losers (from our universe)
 A small table: 5 gainers + 5 losers with ticker, close, % change. Use markdown table syntax.
@@ -106,13 +111,19 @@ Surface these inline. Format:
 Use ⭐ count = conviction_count (cap visual at 5). Use 🆕 NEW for delta_status='new_today'; \
 use 📌 Day N for delta_status='persistent' with days_in_brief.
 
-Then 4-5 lines:
+Then 5-6 lines:
 - **Conviction reads**: list the conviction_signals as a short comma-separated string, e.g. \
 "qv pass · forensic clean · DCF cheap · 90d RS positive". This is the buyside read of \
 *independent signals agreeing*.
 - Filter result: **passes Q+V / GARP screen** (adjusted score X/100, raw score Y, structural \
 penalty Z).
 - Key fundamentals: P/E, ROCE, 3y growth, mcap (cite from data).
+- **Sizing context** (NEW — buyside-critical, surface ALWAYS): cite `proximity_52w_pct` \
+("trading at X% of the 52w range — near highs / near lows / mid-band"), `adv_cr_20d` \
+("20-day ADV ₹X Cr — supports up to ~Y% portfolio allocation without market impact" — use the \
+rough heuristic: a ₹100 Cr position should be ≤ 10× ADV to enter without disturbing the print), \
+`free_float_pct` ("free float Z% — Q-1 promoter delta was D%"), and `fii_pct` / `dii_pct` \
+with their QoQ deltas if available. This is the data that lets the buyside actually size.
 - Why the screen highlights this name: catalyst / mechanical reason.
 - **Considerations against** — the biggest structural risk for this name's sector. Note \
 whether this name appears more/less exposed than peers based on supplied flags.
@@ -252,11 +263,147 @@ class DailyNoteData:
     stock_in_focus: Dict[str, Any] = field(default_factory=dict)
     # Phase 3 — forensic watch
     forensic_watch: List[Dict[str, Any]] = field(default_factory=list)
+    # Sectoral flow breakdown — derived from block+bulk+promoter aggregation
+    sector_flows: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
 
 THEMES = ["India economy", "RBI monetary policy", "Indian rupee",
           "FII outflows", "Indian banks", "India inflation"]
+
+
+def _aggregate_sector_flows(deals_sum: Dict[str, Any],
+                             insider_sum: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Aggregate the block + bulk + promoter prints by sector.
+
+    Pulls raw deal + insider data directly (not the top-N filtered summary)
+    so the sector aggregation has real breadth. Output: list of dicts
+    {sector, n_deals, gross_buy_cr, gross_sell_cr, net_cr, top_names}.
+    Sorted by absolute net descending.
+
+    Notes:
+      - Block deals are two-sided trades; counted on the side noted
+      - Bulk deals: only institutional-counterparty rows (filtered via _is_institutional)
+      - Promoter BUYS are high-conviction signal — net positive
+      - Promoter SELLS already exclude ESOPs upstream — treated as distribution
+    """
+    from src.config import TICKER_SECTOR_MAP
+    from src.data.deals import DealsAdapter
+    from src.data.insider import InsiderAdapter
+
+    agg: Dict[str, Dict[str, Any]] = {}
+
+    def _sector_of(t: str) -> str:
+        return TICKER_SECTOR_MAP.get((t or "").upper(), "Unclassified")
+
+    def _bump(sector: str, side: str, value: float, ticker: str) -> None:
+        b = agg.setdefault(sector, {"sector": sector, "n_deals": 0,
+                                      "gross_buy_cr": 0.0, "gross_sell_cr": 0.0,
+                                      "top_names": {}})
+        b["n_deals"] += 1
+        if side == "buy":
+            b["gross_buy_cr"] += value
+        else:
+            b["gross_sell_cr"] += value
+        if ticker:
+            b["top_names"][ticker] = b["top_names"].get(ticker, 0.0) + \
+                                       (value if side == "buy" else -value)
+
+    # Block deals — raw, all sides. NSE-reported are inherently large-trade
+    # institutional-flavoured prints.
+    try:
+        bd = DealsAdapter().block_deals()
+        if bd is not None and not bd.empty:
+            for _, row in bd.iterrows():
+                sym = str(row.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                val = float(row.get("value_cr") or 0)
+                side = str(row.get("side") or "").lower()
+                if val <= 0:
+                    continue
+                _bump(_sector_of(sym), "buy" if "buy" in side else "sell", val, sym)
+    except Exception as exc:
+        log.warning("sector flow block_deals failed: %s", exc)
+
+    # Bulk deals — DealsAdapter already pre-tags `institutional` via a name-match
+    try:
+        bul = DealsAdapter().bulk_deals()
+        if bul is not None and not bul.empty:
+            for _, row in bul.iterrows():
+                if not bool(row.get("institutional")):
+                    continue
+                sym = str(row.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                val = float(row.get("value_cr") or 0)
+                side = str(row.get("side") or "").lower()
+                if val <= 0:
+                    continue
+                _bump(_sector_of(sym), "buy" if "buy" in side else "sell", val, sym)
+    except Exception as exc:
+        log.warning("sector flow bulk_deals failed: %s", exc)
+
+    # Insider/promoter — raw transactions last 14 days
+    try:
+        ins = InsiderAdapter().transactions(days_back=14)
+        if ins is not None and not ins.empty:
+            for _, row in ins.iterrows():
+                sym = str(row.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                role = str(row.get("category") or row.get("role") or "")
+                mode = str(row.get("mode_of_acquisition") or row.get("mode") or "")
+                # Skip ESOP/grant noise
+                if any(k in mode.lower() for k in ("esop", "grant", "rsu", "espp")):
+                    continue
+                if "promoter" not in role.lower():
+                    continue
+                val = float(row.get("value_cr") or row.get("trade_value_cr") or 0)
+                if val <= 0:
+                    continue
+                acq_disp = str(row.get("acquisition_disposal") or row.get("transaction") or "").lower()
+                side = "buy" if any(k in acq_disp for k in ("acq", "buy", "purchase")) else "sell"
+                _bump(_sector_of(sym), side, val, sym)
+    except Exception as exc:
+        log.warning("sector flow insider failed: %s", exc)
+
+    # Fall back to top-N summary data if raw pulls returned nothing
+    if not agg:
+        for d in (deals_sum.get("institutional_buys") or []):
+            sym = (d.get("symbol") or d.get("ticker") or "").upper()
+            if sym:
+                val = float(d.get("trade_value_cr") or d.get("value_cr") or 0)
+                if val > 0:
+                    _bump(_sector_of(sym), "buy", val, sym)
+        for d in (insider_sum.get("promoter_buys") or []):
+            sym = (d.get("symbol") or d.get("ticker") or "").upper()
+            if sym:
+                val = float(d.get("value_cr") or d.get("trade_value_cr") or 0)
+                if val > 0:
+                    _bump(_sector_of(sym), "buy", val, sym)
+        for d in (insider_sum.get("promoter_sells") or []):
+            sym = (d.get("symbol") or d.get("ticker") or "").upper()
+            if sym:
+                val = float(d.get("value_cr") or d.get("trade_value_cr") or 0)
+                if val > 0:
+                    _bump(_sector_of(sym), "sell", val, sym)
+
+    # Finalise rows
+    rows = []
+    for bucket in agg.values():
+        net = bucket["gross_buy_cr"] - bucket["gross_sell_cr"]
+        top = sorted(bucket["top_names"].items(), key=lambda x: -abs(x[1]))[:3]
+        rows.append({
+            "sector": bucket["sector"],
+            "n_deals": bucket["n_deals"],
+            "gross_buy_cr": round(bucket["gross_buy_cr"], 1),
+            "gross_sell_cr": round(bucket["gross_sell_cr"], 1),
+            "net_cr": round(net, 1),
+            "top_names": [{"ticker": t, "signed_cr": round(v, 1)} for t, v in top],
+        })
+    rows.sort(key=lambda r: -abs(r["net_cr"]))
+    return rows
 
 
 def _safe(loader, label: str, errors: List[str], default, lock: Optional[threading.Lock] = None):
@@ -463,6 +610,16 @@ def gather(progress: Optional[Callable[[str], None]] = None,
     forensic_watch = _safe(_forensics, "Forensic watch", errors, [])
 
     # ====================================================================
+    # Sector flow aggregation — where did institutional money move last 14d?
+    # Sourced from real block + bulk + promoter prints we already pulled.
+    # ====================================================================
+    _step("Aggregating institutional flow by sector…")
+    sector_flows: List[Dict[str, Any]] = _safe(
+        lambda: _aggregate_sector_flows(deals_sum, insider_sum),
+        "Sector flows", errors, []
+    )
+
+    # ====================================================================
     # Phase 3 — enrich each pick with multi-signal conviction + brief-delta
     # ====================================================================
     _step("Enriching picks with conviction + delta…")
@@ -505,29 +662,90 @@ def gather(progress: Optional[Callable[[str], None]] = None,
 
     from src.screens.reverse_dcf import analyze as _rdcf_analyze
     from src.data.prices import PricesAdapter as _Prices
+    from src.data.screener import ScreenerAdapter as _ScreenerForFloat
     from src.screens.swing_setups import relative_strength_vs_index as _rs_vs_index
 
     _prices_inst = _Prices()
-    _nifty = _safe(lambda: _prices_inst.history("^NSEI", period="200d"),
+    _screener_for_float = _ScreenerForFloat()
+    _nifty = _safe(lambda: _prices_inst.history("^NSEI", period="365d"),
                    "RS Nifty", errors, None)
     _nifty_close = _nifty["Close"] if _nifty is not None and not _nifty.empty else None
 
     def _enrich_one(ticker: str) -> Dict[str, Any]:
+        """Per-ticker enrichment: DCF verdict, 90d RS, 52w proximity, ADV, free float."""
         info: Dict[str, Any] = {"ticker": ticker}
+        # Reverse-DCF verdict (cached)
         try:
             r = _rdcf_analyze(ticker)
             info["dcf_verdict"] = r.verdict if r.fetched_ok else None
         except Exception:
             info["dcf_verdict"] = None
+
+        # OHLCV-derived: 90d RS + 52w proximity + 20-day ADV
         try:
-            df = _prices_inst.history(f"{ticker}.NS", period="200d")
-            if not df.empty and _nifty_close is not None:
-                rs = _rs_vs_index(df["Close"], _nifty_close, 90)
-                info["rs_90d"] = float(rs) if rs is not None else None
-            else:
+            df = _prices_inst.history(f"{ticker}.NS", period="365d")
+            if df.empty:
                 info["rs_90d"] = None
+                info["proximity_52w_pct"] = None
+                info["adv_cr_20d"] = None
+            else:
+                close = df["Close"].dropna()
+                vol = df["Volume"].dropna() if "Volume" in df.columns else None
+                # 90d RS
+                if _nifty_close is not None:
+                    rs = _rs_vs_index(close, _nifty_close, 90)
+                    info["rs_90d"] = float(rs) if rs is not None else None
+                else:
+                    info["rs_90d"] = None
+                # 52w proximity
+                if len(close) >= 50:
+                    high_52w = float(close.iloc[-252:].max() if len(close) >= 252 else close.max())
+                    low_52w = float(close.iloc[-252:].min() if len(close) >= 252 else close.min())
+                    last = float(close.iloc[-1])
+                    info["price_52w_high"] = round(high_52w, 1)
+                    info["price_52w_low"] = round(low_52w, 1)
+                    if high_52w > low_52w:
+                        prox = (last - low_52w) / (high_52w - low_52w) * 100
+                        info["proximity_52w_pct"] = round(prox, 1)
+                    else:
+                        info["proximity_52w_pct"] = None
+                else:
+                    info["proximity_52w_pct"] = None
+                # 20-day ADV in Crores (volume × avg close)
+                if vol is not None and len(vol) >= 20 and len(close) >= 20:
+                    avg_shares = float(vol.iloc[-20:].mean())
+                    avg_price = float(close.iloc[-20:].mean())
+                    adv_cr = avg_shares * avg_price / 1e7
+                    info["adv_cr_20d"] = round(adv_cr, 1)
+                else:
+                    info["adv_cr_20d"] = None
         except Exception:
             info["rs_90d"] = None
+            info["proximity_52w_pct"] = None
+            info["adv_cr_20d"] = None
+
+        # Free float from shareholding pattern (100 - promoter %)
+        try:
+            sh = _screener_for_float.shareholding(ticker)
+            promoter_pct = sh.get("promoters_latest")
+            fii_pct = sh.get("fiis_latest")
+            dii_pct = sh.get("diis_latest")
+            if promoter_pct is not None:
+                info["promoter_pct"] = round(float(promoter_pct), 1)
+                info["free_float_pct"] = round(100.0 - float(promoter_pct), 1)
+            else:
+                info["free_float_pct"] = None
+            if fii_pct is not None:
+                info["fii_pct"] = round(float(fii_pct), 1)
+            if dii_pct is not None:
+                info["dii_pct"] = round(float(dii_pct), 1)
+            # QoQ delta
+            for key in ("promoters_qoq_change", "fiis_qoq_change", "diis_qoq_change"):
+                v = sh.get(key)
+                if v is not None:
+                    info[key] = round(float(v), 2)
+        except Exception:
+            info["free_float_pct"] = None
         return info
 
     ticker_signals: Dict[str, Dict[str, Any]] = {}
@@ -580,6 +798,14 @@ def gather(progress: Optional[Callable[[str], None]] = None,
                 sigs.append("momentum_pos")
             p["conviction_signals"] = sigs
             p["conviction_count"] = len([s for s in sigs if s not in ("forensic_amber",)])
+
+            # Market context — 52w / ADV / free float for sizing & risk-reward read
+            for k in ("proximity_52w_pct", "price_52w_high", "price_52w_low",
+                       "adv_cr_20d", "free_float_pct", "promoter_pct",
+                       "fii_pct", "dii_pct",
+                       "promoters_qoq_change", "fiis_qoq_change", "diis_qoq_change"):
+                if k in ts:
+                    p[k] = ts[k]
 
             # Delta from history
             try:
@@ -643,6 +869,7 @@ def gather(progress: Optional[Callable[[str], None]] = None,
         rebalance_predictions=phase1["Rebalance"],
         stock_in_focus=sif,
         forensic_watch=forensic_watch,
+        sector_flows=sector_flows,
         errors=errors,
     )
 
@@ -771,6 +998,13 @@ class DailyNoteAgent:
             "",
             "## Smart Money — Promoter sells (last 14d, ESOP excluded)",
             "```json", json.dumps(d.promoter_sells, indent=2, default=str), "```",
+            "",
+            "## Sectoral Flow Breakdown (last 14d, derived from block + bulk + promoter prints)",
+            "Real money — every row backed by actual NSE-reported deals. Surface the top "
+            "3-4 sectors by absolute net flow in the brief's Market Action section as: "
+            "**Sector flow read**: 'IT received ₹X Cr (top names: TCS, INFY); Banks distributed "
+            "₹Y Cr (top names: KOTAK)'.",
+            "```json", json.dumps(d.sector_flows[:10], indent=2, default=str), "```",
             "",
             "## Stock in Focus (highest-scoring screen candidate)",
             "```json", json.dumps({k: v for k, v in (d.stock_in_focus or {}).items()
