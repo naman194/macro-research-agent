@@ -54,6 +54,21 @@ OUTPUT FORMAT (Markdown, this exact structure, this order):
 
 # India Morning Brief — {DATE}
 
+## TL;DR — Today's Setup
+Exactly 3 bullets (≤ 20 words each). The single most important read of the day in plain \
+language. Format each as **CATEGORY → claim with the specific datapoint**. Examples:
+
+- **Tape →** Risk-on overnight (S&P +0.4%, GIFT Nifty implies +85 pts open); breadth was \
+3:2 yesterday, FII net +₹1,240 Cr cash.
+- **Multi-signal alignment →** DIXON now hits 5/6 conviction signals (Q+V + GARP + clean \
+forensic + DCF cheap + RS positive). Day 1 in brief.
+- **Watch today →** ASIANPAINT reports after-close — last Q margin -5% YoY; mgmt FY26 \
+guidance was 18-20% band.
+
+Pick the 3 sharpest reads from across the whole brief — they should be the things a \
+buyside desk would WhatsApp each other before the open. Avoid recommendations; use \
+observational verbs.
+
 ## At a Glance
 3-4 lines. Yesterday's Nifty close + % move, breadth read, FII vs DII positioning, what \
 overnight set up (US close, Asia open, oil, INR), single most important datapoint today, \
@@ -73,11 +88,26 @@ not a recommendation).
 - Breadth: advance/decline ratio.
 - **FII/DII flows** — quote the supplied Rs Cr numbers explicitly. Describe divergences \
 factually (e.g. "DII absorbed FII selling — historically a support pattern, not always reliable").
-- **Sector flow read (NEW — buyside-critical)** — from the supplied `sector_flows` payload, \
+- **Sector flow read (buyside-critical)** — from the supplied `sector_flows` payload, \
 surface the top 3-4 sectors by absolute net Cr flow. Format: "**Sector flow read**: IT \
 received +₹X Cr (top names: TCS, INFY); Banks distributed -₹Y Cr (top names: KOTAK)". This \
 is derived from actual block + bulk + promoter prints over the last 14 days — every number \
 is data-backed, not inferred. Skip the row if `sector_flows` is empty.
+- **Pivot levels (NEW)** — from `pivot_levels` payload, format inline one line per index: \
+"Nifty pivots — pivot {P}; R1 {R1} / R2 {R2}; S1 {S1} / S2 {S2}". Standard intraday \
+desk levels. Skip if payload empty.
+- **Volume Spikes (NEW)** — from `volume_spikes` payload, sub-section under Market Action: \
+"**Volume Spikes** — Accumulation: TICKER (3.2× ADV, +4.5%), TICKER2 (2.8× ADV, +2.1%); \
+Distribution: TICKER3 (4.1× ADV, -6.8%)". Top 3 each side. Skip if both lists empty.
+
+## Yesterday's Results Scorecard
+ONLY include if `result_reactions` payload is non-empty. One block:
+
+**Results Scorecard** — what the tape rewarded / punished yesterday:
+- ✅ **TICKER** (result {date}) — reaction **+X.X%** — one-line takeaway
+- ❌ **TICKER** (result {date}) — reaction **−X.X%** — one-line takeaway
+
+Up to 4 names total, biggest reactions first regardless of direction.
 
 ## Top Gainers / Losers (from our universe)
 A small table: 5 gainers + 5 losers with ticker, close, % change. Use markdown table syntax.
@@ -243,7 +273,10 @@ GDELT news sentiment.**"
 HARD RULES:
 - **Never fabricate.** If a number isn't in the supplied data, write "n/a — verify" or omit.
 - **Cite specifically** when you use a number — readers must be able to verify.
-- **Keep under 900 words total.** Morning brief, not research report.
+- **Keep under 1800 words total.** Morning brief, not research report — but the brief now \
+covers conviction tags, sizing context, sector flows, earnings preview, ownership inflection, \
+plus the standard sections, so a tight 1500-1800 words is normal. Better to surface every \
+section concisely than to truncate.
 - **OBSERVATIONAL TONE — NOT PRESCRIPTIVE.** This is the most important rule. Use: "data shows", \
 "filter highlights", "screen output identifies", "tape implies", "structural setup suggests". \
 NEVER use: "we recommend", "we prefer", "buy", "sell", "we'd avoid", "top pick", "conviction \
@@ -297,11 +330,196 @@ class DailyNoteData:
     earnings_preview: List[Dict[str, Any]] = field(default_factory=list)
     # Ownership inflection — names with material QoQ shareholding deltas
     ownership_inflection: List[Dict[str, Any]] = field(default_factory=list)
+    # Volume spike scanner — accumulation / distribution flags from yesterday's tape
+    volume_spikes: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    # Index pivot levels for today (classic R1/R2/S1/S2 from yesterday OHLC)
+    pivot_levels: List[Dict[str, Any]] = field(default_factory=list)
+    # Yesterday's result reactions — names that reported recently + tape response
+    result_reactions: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
 
 THEMES = ["India economy", "RBI monetary policy", "Indian rupee",
           "FII outflows", "Indian banks", "India inflation"]
+
+
+def _build_volume_spikes(universe: List[str],
+                           prices: Optional[Any] = None,
+                           threshold_ratio: float = 2.0,
+                           max_each: int = 5) -> Dict[str, List[Dict[str, Any]]]:
+    """Names where yesterday's volume > threshold × 20-day ADV (shares).
+
+    Returns {'accumulation': [...], 'distribution': [...]} — accumulation
+    = close was up on spike volume (institutional buying); distribution
+    = close was down on spike volume (institutional selling).
+
+    Limited to the screen-coverage universe so noise is bounded.
+    """
+    from src.data.prices import PricesAdapter
+    p = prices or PricesAdapter()
+    acc, dist = [], []
+    for t in universe:
+        try:
+            df = p.history(f"{t.upper()}.NS", period="60d")
+            if df.empty or len(df) < 22:
+                continue
+            vol = df["Volume"].dropna()
+            close = df["Close"].dropna()
+            if len(vol) < 22 or len(close) < 22:
+                continue
+            yesterday_vol = float(vol.iloc[-1])
+            adv20 = float(vol.iloc[-21:-1].mean())
+            if adv20 <= 0:
+                continue
+            ratio = yesterday_vol / adv20
+            if ratio < threshold_ratio:
+                continue
+            close_yest = float(close.iloc[-1])
+            close_prev = float(close.iloc[-2])
+            pct_move = (close_yest / close_prev - 1) * 100 if close_prev else 0
+            adv_cr = (adv20 * float(close.iloc[-21:-1].mean()) / 1e7)
+            entry = {
+                "ticker": t.upper(),
+                "vol_ratio": round(ratio, 2),
+                "close": round(close_yest, 1),
+                "pct_move": round(pct_move, 2),
+                "adv_cr_20d": round(adv_cr, 1),
+                "yesterday_value_cr": round(yesterday_vol * close_yest / 1e7, 1),
+            }
+            if pct_move >= 0:
+                acc.append(entry)
+            else:
+                dist.append(entry)
+        except Exception:
+            continue
+    acc.sort(key=lambda x: -x["vol_ratio"])
+    dist.sort(key=lambda x: -x["vol_ratio"])
+    return {"accumulation": acc[:max_each], "distribution": dist[:max_each]}
+
+
+def _build_pivot_levels(indices_snapshot: List[Dict[str, Any]],
+                          prices: Optional[Any] = None) -> List[Dict[str, Any]]:
+    """Classic pivot R1/R2/S1/S2 for major indices using yesterday's OHLC.
+
+    Pivot = (H + L + C) / 3
+    R1 = 2P - L,  S1 = 2P - H
+    R2 = P + (H - L),  S2 = P - (H - L)
+    """
+    from src.data.prices import PricesAdapter
+    p = prices or PricesAdapter()
+    out = []
+    symbol_map = {
+        "Nifty 50": "^NSEI",
+        "Bank Nifty": "^NSEBANK",
+        "Sensex": "^BSESN",
+    }
+    for index_name, sym in symbol_map.items():
+        try:
+            df = p.history(sym, period="10d")
+            if df.empty or len(df) < 1:
+                continue
+            last = df.iloc[-1]
+            H = float(last["High"])
+            L = float(last["Low"])
+            C = float(last["Close"])
+            if H <= L:
+                continue
+            P = (H + L + C) / 3
+            R1 = 2 * P - L
+            R2 = P + (H - L)
+            S1 = 2 * P - H
+            S2 = P - (H - L)
+            out.append({
+                "index": index_name,
+                "close": round(C, 0),
+                "pivot": round(P, 0),
+                "R1": round(R1, 0), "R2": round(R2, 0),
+                "S1": round(S1, 0), "S2": round(S2, 0),
+            })
+        except Exception:
+            continue
+    return out
+
+
+def _build_result_reactions(today: date, lookback_days: int = 2,
+                              universe: Optional[List[str]] = None,
+                              prices: Optional[Any] = None,
+                              max_results: int = 6) -> List[Dict[str, Any]]:
+    """Names that reported results in the last N trading days + their reaction.
+
+    Reaction = (close_yesterday / close_pre_result) - 1, where pre_result is
+    the close on the day before the result date. Surfaces what the tape
+    actually rewarded / punished.
+    """
+    from src.config import DEFAULT_UNIVERSE
+    from src.screens.special_situations import NSEEventsAdapter
+    from src.data.prices import PricesAdapter
+    from datetime import datetime, timedelta
+
+    universe_set = {t.upper() for t in (universe or DEFAULT_UNIVERSE)}
+    p = prices or PricesAdapter()
+
+    try:
+        df = NSEEventsAdapter().all_events()
+    except Exception:
+        return []
+    if df is None or df.empty or "purpose" not in df.columns:
+        return []
+    rs = df[df["purpose"].fillna("").str.contains("result|financial result",
+                                                    case=False, regex=True)]
+    if rs.empty:
+        return []
+
+    def _parse_d(s):
+        for fmt in ("%d-%b-%Y", "%d-%b-%y", "%d %b %Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(str(s), fmt).date()
+            except Exception:
+                pass
+        return None
+
+    cutoff_min = today - timedelta(days=lookback_days + 1)
+    cutoff_max = today  # results from today not yet reacted
+    rows = []
+    for _, r in rs.iterrows():
+        d = _parse_d(r.get("date"))
+        if d is None or d < cutoff_min or d >= cutoff_max:
+            continue
+        sym = str(r.get("symbol") or "").upper()
+        if not sym or sym not in universe_set:
+            continue
+        # Reaction: close yesterday vs close on result date (or prior day if same)
+        try:
+            ohlc = p.history(f"{sym}.NS", period="10d")
+            if ohlc.empty or len(ohlc) < 3:
+                continue
+            close_series = ohlc["Close"].dropna()
+            close_yest = float(close_series.iloc[-1])
+            # Use 2 trading days back as pre-result anchor (conservative)
+            close_pre = float(close_series.iloc[-3]) if len(close_series) >= 3 else None
+            if not close_pre:
+                continue
+            reaction_pct = (close_yest / close_pre - 1) * 100
+            rows.append({
+                "ticker": sym,
+                "result_date": d.isoformat(),
+                "close_pre": round(close_pre, 1),
+                "close_yest": round(close_yest, 1),
+                "reaction_pct": round(reaction_pct, 2),
+            })
+        except Exception:
+            continue
+    # Sort by absolute reaction magnitude descending — most-talked-about names first
+    rows.sort(key=lambda r: -abs(r["reaction_pct"]))
+    # Dedupe by ticker (keep largest reaction)
+    seen = set()
+    out = []
+    for r in rows:
+        if r["ticker"] in seen:
+            continue
+        seen.add(r["ticker"])
+        out.append(r)
+    return out[:max_results]
 
 
 def _build_earnings_preview(today: date, days_ahead: int = 5,
@@ -788,6 +1006,20 @@ def gather(progress: Optional[Callable[[str], None]] = None,
         "Earnings preview", errors, []
     )
 
+    _step("Scanning volume spikes + pivot levels + result reactions…")
+    volume_spikes = _safe(
+        lambda: _build_volume_spikes(list(DEFAULT_UNIVERSE), threshold_ratio=2.0),
+        "Volume spikes", errors, {"accumulation": [], "distribution": []}
+    )
+    pivot_levels = _safe(
+        lambda: _build_pivot_levels(phase1["Indices"]),
+        "Pivot levels", errors, []
+    )
+    result_reactions = _safe(
+        lambda: _build_result_reactions(date.today(), lookback_days=2),
+        "Result reactions", errors, []
+    )
+
     # Note: ownership_inflection is built AFTER Phase 3 enrichment, since it
     # uses ticker_signals (which is populated in Phase 3). See below.
 
@@ -1087,6 +1319,9 @@ def gather(progress: Optional[Callable[[str], None]] = None,
         sector_flows=sector_flows,
         earnings_preview=earnings_preview,
         ownership_inflection=ownership_inflection,
+        volume_spikes=volume_spikes,
+        pivot_levels=pivot_levels,
+        result_reactions=result_reactions,
         errors=errors,
     )
 
@@ -1149,7 +1384,7 @@ class DailyNoteAgent:
         try:
             resp = self._client.messages.create(
                 model=ANTHROPIC_MODEL,
-                max_tokens=2500,
+                max_tokens=5000,
                 system=[{
                     "type": "text",
                     "text": DAILY_NOTE_SYSTEM,
@@ -1238,6 +1473,26 @@ class DailyNoteAgent:
             "Inflection** section with one line per name.",
             "```json", json.dumps(d.ownership_inflection, indent=2, default=str), "```",
             "",
+            "## Volume Spike Scanner — yesterday's tape",
+            "Names where yesterday's volume > 2× 20-day ADV. Accumulation = closed up "
+            "(institutional buying); Distribution = closed down (institutional selling). "
+            "Surface as a **Volume Spikes** sub-section under Market Action — top 3 each "
+            "side, ticker · vol-ratio · % move · ADV in Cr context.",
+            "```json", json.dumps(d.volume_spikes, indent=2, default=str), "```",
+            "",
+            "## Pivot Levels — Today's intraday R/S",
+            "Classic pivot points for Nifty, BankNifty, Sensex from yesterday's OHLC. "
+            "Format inline in Market Action as: 'Nifty pivots — pivot 24,580; R1 24,680 / "
+            "R2 24,820; S1 24,440 / S2 24,300'. Standard desk levels for the day.",
+            "```json", json.dumps(d.pivot_levels, indent=2, default=str), "```",
+            "",
+            "## Yesterday's Result Reactions",
+            "Names from our covered universe that reported in the last 2 sessions + how "
+            "the tape responded (% move pre-result close vs current close). Surface as a "
+            "**Results Scorecard** section: one line per name with ticker · result date · "
+            "reaction %. Tells the reader what's being rewarded / punished this season.",
+            "```json", json.dumps(d.result_reactions, indent=2, default=str), "```",
+            "",
             "## Stock in Focus (highest-scoring screen candidate)",
             "```json", json.dumps({k: v for k, v in (d.stock_in_focus or {}).items()
                                     if k not in ("chart_png", "markdown")},
@@ -1283,7 +1538,12 @@ class DailyNoteAgent:
             ]
         sections += [
             "",
-            "Write the morning brief now. Apply all hard rules. Keep under 700 words.",
+            "Write the morning brief now. Apply all hard rules. Target 1500-1800 words "
+            "— enough to cover every section (TL;DR, Pre-Market, Market Action with sector "
+            "flows, Names Passing Filters with conviction/sizing/delta, Earnings This Week, "
+            "Ownership Inflection, Smart Money, Technical Setups, F&O, Spotlight, Macro "
+            "Calendar, Catalysts, Policy, Sentiment, Risk Watch, Disclaimer) without "
+            "truncating any of them.",
         ]
         return "\n".join(sections)
 
