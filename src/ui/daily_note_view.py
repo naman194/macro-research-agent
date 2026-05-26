@@ -17,11 +17,42 @@ from src.agent.visuals import (
 )
 
 
-@st.cache_data(ttl=1800, show_spinner="Gathering market data, screens, sentiment, policy items…")
-def _gather_payload() -> dict:
-    d = gather()
+# Manual cache so we can drive a *stepped* progress UI (st.cache_data only
+# supports a single static spinner). 30-minute TTL matches the old behaviour.
+_PAYLOAD_CACHE: dict = {"data": None, "ts": 0.0}
+_PAYLOAD_TTL_SECONDS = 1800
+
+
+def _get_or_gather(progress_cb=None) -> dict:
+    import time
     from dataclasses import asdict
-    return asdict(d)
+    now = time.time()
+    cached = _PAYLOAD_CACHE.get("data")
+    if cached is not None and (now - _PAYLOAD_CACHE["ts"]) < _PAYLOAD_TTL_SECONDS:
+        return cached
+    d = gather(progress=progress_cb)
+    payload = asdict(d)
+    _PAYLOAD_CACHE["data"] = payload
+    _PAYLOAD_CACHE["ts"] = now
+    return payload
+
+
+def _clear_payload_cache() -> None:
+    _PAYLOAD_CACHE["data"] = None
+    _PAYLOAD_CACHE["ts"] = 0.0
+
+
+# Backwards-compatible name for callers that haven't been ported yet.
+class _GatherPayloadShim:
+    @staticmethod
+    def clear():
+        _clear_payload_cache()
+
+    def __call__(self):
+        return _get_or_gather()
+
+
+_gather_payload = _GatherPayloadShim()
 
 
 @st.cache_resource
@@ -87,7 +118,7 @@ def render() -> None:
                             help="Clears all cached data sources and rebuilds the brief from "
                                  "live NSE / FRED / screener / GDELT / RBI feeds. Takes 60-90s.")
     if refresh:
-        _gather_payload.clear()
+        _clear_payload_cache()
         try:
             st.cache_data.clear()
         except Exception:
@@ -98,13 +129,29 @@ def render() -> None:
 
     if not generate:
         st.info(
-            "Click **Generate** to build today's brief. First run ~60-90 seconds. "
-            "Re-runs instant for 30 minutes. Use **Refresh data + regenerate** to bypass "
-            "the cache and pull fresh from every data source."
+            "Click **Generate** to build today's brief. First run ~30-60 seconds "
+            "(parallel data pulls). Re-runs instant for 30 minutes. Use **Refresh "
+            "data + regenerate** to bypass the cache and pull fresh from every "
+            "data source."
         )
         return
 
-    payload = _gather_payload()
+    # ---------------- Stepped progress while gather() runs ----------------
+    # Cache hit → instant; cache miss → 20-ish parallel pulls showing as ✓ ticks.
+    import time
+    _t0 = time.time()
+    with st.status("Building today's brief…", expanded=True) as status:
+        progress_lines = []
+        def _cb(label: str) -> None:
+            progress_lines.append(label)
+            # Keep the last ~10 lines visible so the panel doesn't bloat
+            status.update(label=label)
+            for line in progress_lines[-10:]:
+                pass  # status panel shows the latest label; individual writes below
+            st.write(label)
+        payload = _get_or_gather(progress_cb=_cb)
+        status.update(label=f"✓ Data ready ({time.time()-_t0:.1f}s)", state="complete")
+
     from src.agent.daily_note import DailyNoteData
     data = DailyNoteData(**payload)
 

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
@@ -228,19 +230,39 @@ THEMES = ["India economy", "RBI monetary policy", "Indian rupee",
           "FII outflows", "Indian banks", "India inflation"]
 
 
-def _safe(loader, label: str, errors: List[str], default):
+def _safe(loader, label: str, errors: List[str], default, lock: Optional[threading.Lock] = None):
+    """Run loader, returning default + recording error on failure.
+    Pass `lock` when called from a thread-pool to make errors-list append safe."""
     try:
         return loader()
     except Exception as exc:
         log.warning("daily-note source %s failed: %s", label, exc)
-        errors.append(f"{label}: {exc}")
+        if lock:
+            with lock:
+                errors.append(f"{label}: {exc}")
+        else:
+            errors.append(f"{label}: {exc}")
         return default
 
 
-def gather() -> DailyNoteData:
-    """Gather every input the agent needs. Each source is wrapped — if any one fails,
-    the note still generates with the rest. Errors are surfaced in the payload."""
+def gather(progress: Optional[Callable[[str], None]] = None,
+           max_workers: int = 8) -> DailyNoteData:
+    """Gather every input the agent needs. Phase 1 (~20 independent loaders)
+    runs in a thread pool; Phase 2 (forensic_watch + stock_in_focus, which
+    need Phase 1 outputs) runs sequentially after.
+
+    `progress(label)` is called once per Phase 1 task completion + once per
+    Phase 2 step. Wire it to `st.status()` for live stepped UI.
+    """
     errors: List[str] = []
+    errors_lock = threading.Lock()
+
+    def _step(label: str) -> None:
+        if progress is not None:
+            try:
+                progress(label)
+            except Exception:
+                pass
 
     def _fred():
         df = FredAdapter().snapshot()
@@ -320,16 +342,57 @@ def gather() -> DailyNoteData:
 
     today = date.today().strftime("%d %b %Y")
 
-    movers = _safe(_movers, "Movers", errors,
-                   {"advances": 0, "declines": 0, "unchanged": 0, "gainers": [], "losers": []})
-    deals_sum = _safe(_deals_summary, "Block/Bulk deals", errors,
-                      {"block_top": [], "institutional_buys": []})
-    insider_sum = _safe(_insider_summary, "Insider", errors,
-                        {"promoter_buys": [], "promoter_sells": []})
+    # ====================================================================
+    # Phase 1 — independent loaders run in parallel
+    # ====================================================================
+    phase1_jobs = {
+        "FRED":              (_fred, []),
+        "IMF":               (_imf, []),
+        "WorldBank":         (_wb, []),
+        "Indices":           (_indices, []),
+        "Global cues":       (_global, []),
+        "FII/DII flows":     (_flows, []),
+        "Movers":            (_movers, {"advances": 0, "declines": 0,
+                                          "unchanged": 0, "gainers": [], "losers": []}),
+        "Swing setups":      (_swing, {"regime": "unknown", "trend_pullback": [],
+                                        "base_breakout": []}),
+        "Block/Bulk deals":  (_deals_summary, {"block_top": [], "institutional_buys": []}),
+        "Insider":           (_insider_summary, {"promoter_buys": [], "promoter_sells": []}),
+        "F&O signals":       (_fno, []),
+        "Econ calendar":     (_econ, []),
+        "Rebalance":         (_rebalance, {}),
+        "RBI":               (_rbi, []),
+        "SEBI":              (_sebi, []),
+        "GDELT themes":      (_themes, []),
+        "Q+V screen":        (_qv, []),
+        "GARP screen":       (_garp, []),
+        "Special-sit":       (_special, []),
+    }
 
-    # Phase P1: stock in focus from screen winners (gather after screens)
-    qv_picks = _safe(_qv, "QV screen", errors, [])
-    garp_picks = _safe(_garp, "GARP screen", errors, [])
+    phase1: Dict[str, Any] = {}
+    _step(f"Starting {len(phase1_jobs)} parallel data pulls…")
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        fut_to_label = {
+            ex.submit(_safe, loader, label, errors, default, errors_lock): label
+            for label, (loader, default) in phase1_jobs.items()
+        }
+        done = 0
+        for fut in as_completed(fut_to_label):
+            label = fut_to_label[fut]
+            phase1[label] = fut.result()
+            done += 1
+            _step(f"✓ {label} ({done}/{len(phase1_jobs)})")
+
+    movers = phase1["Movers"]
+    deals_sum = phase1["Block/Bulk deals"]
+    insider_sum = phase1["Insider"]
+    qv_picks = phase1["Q+V screen"]
+    garp_picks = phase1["GARP screen"]
+
+    # ====================================================================
+    # Phase 2 — sequential (each depends on Phase 1 outputs)
+    # ====================================================================
+    _step("Building stock-in-focus…")
     from src.agent.stock_in_focus import build_focus  # local import to avoid circular
     sif = _safe(lambda: build_focus(qv_picks, garp_picks),
                 "Stock-in-focus", errors, {})
@@ -367,16 +430,19 @@ def gather() -> DailyNoteData:
         out.sort(key=lambda x: -x["score"])
         return out[:5]
 
+    _step("Running forensic watch…")
     forensic_watch = _safe(_forensics, "Forensic watch", errors, [])
+    _step("✓ All data gathered")
 
+    # All Phase 1 outputs come straight from the parallel dict — no re-running.
     return DailyNoteData(
         today=today,
-        macro_fred=_safe(_fred, "FRED", errors, []),
-        macro_imf=_safe(_imf, "IMF", errors, []),
-        macro_wb=_safe(_wb, "WorldBank", errors, []),
-        indices_snapshot=_safe(_indices, "Indices", errors, []),
-        global_cues=_safe(_global, "Global cues", errors, []),
-        fii_dii=_safe(_flows, "FII/DII", errors, []),
+        macro_fred=phase1["FRED"],
+        macro_imf=phase1["IMF"],
+        macro_wb=phase1["WorldBank"],
+        indices_snapshot=phase1["Indices"],
+        global_cues=phase1["Global cues"],
+        fii_dii=phase1["FII/DII flows"],
         gainers=movers.get("gainers", []),
         losers=movers.get("losers", []),
         breadth={"advances": movers.get("advances", 0),
@@ -385,23 +451,58 @@ def gather() -> DailyNoteData:
                  "adv_dec_ratio": movers.get("adv_dec_ratio")},
         top_quality_value=qv_picks,
         top_garp=garp_picks,
-        swing_setups=_safe(_swing, "Swing scanner", errors,
-                          {"regime": "unknown", "trend_pullback": [], "base_breakout": []}),
-        special_situations=_safe(_special, "Special-sit", errors, []),
-        rbi_items=_safe(_rbi, "RBI", errors, []),
-        sebi_items=_safe(_sebi, "SEBI", errors, []),
-        theme_sentiment=_safe(_themes, "GDELT themes", errors, []),
+        swing_setups=phase1["Swing setups"],
+        special_situations=phase1["Special-sit"],
+        rbi_items=phase1["RBI"],
+        sebi_items=phase1["SEBI"],
+        theme_sentiment=phase1["GDELT themes"],
         block_deals=deals_sum.get("block_top", []),
         institutional_bulk_deals=deals_sum.get("institutional_buys", []),
         promoter_buys=insider_sum.get("promoter_buys", []),
         promoter_sells=insider_sum.get("promoter_sells", []),
-        fno_signals=_safe(_fno, "F&O signals", errors, []),
-        econ_calendar=_safe(_econ, "Econ calendar", errors, []),
-        rebalance_predictions=_safe(_rebalance, "Rebalance predictor", errors, {}),
+        fno_signals=phase1["F&O signals"],
+        econ_calendar=phase1["Econ calendar"],
+        rebalance_predictions=phase1["Rebalance"],
         stock_in_focus=sif,
         forensic_watch=forensic_watch,
         errors=errors,
     )
+
+
+# ============================================================
+# Cache warm-up — runs gather() once in the background at container startup
+# so the first user click hits warm SQLite caches across all adapters.
+# Idempotent + non-blocking. Safe to import at app entry.
+# ============================================================
+
+_warmup_started = False
+_warmup_lock = threading.Lock()
+
+
+def start_warmup() -> None:
+    """Kick off a one-shot background warm-up of the gather() pipeline.
+
+    Idempotent — calling twice is a no-op. Failures are swallowed (we want
+    a clean web start regardless of upstream outages). The point is to
+    populate the SQLite adapter caches so the first user request to
+    Daily Morning Brief is fast.
+    """
+    global _warmup_started
+    with _warmup_lock:
+        if _warmup_started:
+            return
+        _warmup_started = True
+
+    def _bg():
+        try:
+            log.info("daily_note warm-up: starting background gather()…")
+            gather()
+            log.info("daily_note warm-up: complete.")
+        except Exception as exc:
+            log.warning("daily_note warm-up failed (non-fatal): %s", exc)
+
+    t = threading.Thread(target=_bg, name="daily-note-warmup", daemon=True)
+    t.start()
 
 
 class DailyNoteAgent:

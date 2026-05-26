@@ -66,6 +66,12 @@ if _SHARED_PW:
         st.stop()
 
 
+# Kick off background cache warm-up so the first Daily Morning Brief click
+# hits warm SQLite caches across NSE, screener, FRED, GDELT, etc.
+# Idempotent + non-blocking — safe even if the first user is signing in.
+from src.agent.daily_note import start_warmup as _start_warmup
+_start_warmup()
+
 from src.ui import (
     backtest_view,
     calendar_view,
