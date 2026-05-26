@@ -84,8 +84,32 @@ in sector disruption risks (GenAI for IT, NIM for Banks, USFDA for Pharma etc.) 
 adjusted score, not raw score**. A high raw_score with large structural_penalty means the \
 financial profile looks attractive but the sector faces headwinds — flag this explicitly.
 
-For each, 4-5 lines:
-**TICKER (Sector) — one-line observational summary**
+EACH name in the supplied data has structured fields the buyside reader cares about:
+- `conviction_signals`: list of independent confirms. Possible values:
+  - `qv` / `garp` — the primary screen that surfaced the name
+  - `qv_also` / `garp_also` — the *other* screen ALSO surfaced this name (strong cross-screen confirm)
+  - `forensic_clean` — earnings-quality battery shows no red flags
+  - `forensic_amber` — minor flags (informational, weaker than clean)
+  - `dcf_cheap` — reverse-DCF implies the market is paying for *less* growth than the business has delivered
+  - `momentum_pos` — 90-day relative strength vs Nifty is positive
+  - `smart_money_buy` — appears in last 14d promoter buys OR institutional bulk buys
+  - `special_sit` — has an active special-situation event (buyback / fund-raising / etc.)
+- `conviction_count`: how many of the above are firing simultaneously (1 = single signal, 4+ = multi-confirm)
+- `delta_status`: "new_today" (first appearance) or "persistent" (carried over from prior brief)
+- `days_in_brief`: how many consecutive briefs this ticker has appeared on
+
+Surface these inline. Format:
+
+**TICKER (Sector) ⭐⭐⭐ 4-signal · 🆕 NEW today** — one-line observational summary
+**TICKER (Sector) ⭐⭐ 2-signal · 📌 Day 5 in brief** — one-line observational summary
+
+Use ⭐ count = conviction_count (cap visual at 5). Use 🆕 NEW for delta_status='new_today'; \
+use 📌 Day N for delta_status='persistent' with days_in_brief.
+
+Then 4-5 lines:
+- **Conviction reads**: list the conviction_signals as a short comma-separated string, e.g. \
+"qv pass · forensic clean · DCF cheap · 90d RS positive". This is the buyside read of \
+*independent signals agreeing*.
 - Filter result: **passes Q+V / GARP screen** (adjusted score X/100, raw score Y, structural \
 penalty Z).
 - Key fundamentals: P/E, ROCE, 3y growth, mcap (cite from data).
@@ -96,8 +120,13 @@ whether this name appears more/less exposed than peers based on supplied flags.
 If no name passes the adjusted filter today, say "No names passed today's adjusted-score filter" \
 — do not force entries.
 
+PRIORITIZE names with conviction_count ≥ 3 — those are the multi-signal-aligned. A name with \
+conviction_count=1 (just appears in the screen) is informational; a name with conviction_count=4+ \
+is where independent methods agree.
+
 **DO NOT use words like "buy", "recommend", "we'd add", "top pick", "high conviction".** \
-Use: "passes filter", "ranks highest", "data highlights", "structural setup shows".
+Use: "passes filter", "ranks highest", "data highlights", "structural setup shows", \
+"multi-signal aligned", "independent confirms".
 
 ## Technical Setups Observed
 From the supplied swing scanner output, list up to 3 setups. For each one line:
@@ -432,6 +461,155 @@ def gather(progress: Optional[Callable[[str], None]] = None,
 
     _step("Running forensic watch…")
     forensic_watch = _safe(_forensics, "Forensic watch", errors, [])
+
+    # ====================================================================
+    # Phase 3 — enrich each pick with multi-signal conviction + brief-delta
+    # ====================================================================
+    _step("Enriching picks with conviction + delta…")
+    today_iso = date.today().isoformat()
+
+    # Build the "sets where this ticker fires" once, then check membership cheaply
+    smart_money_set: set[str] = set()
+    for d in deals_sum.get("institutional_buys", []) or []:
+        sym = d.get("symbol") or d.get("ticker")
+        if sym:
+            smart_money_set.add(str(sym).upper())
+    for d in insider_sum.get("promoter_buys", []) or []:
+        sym = d.get("symbol") or d.get("ticker")
+        if sym:
+            smart_money_set.add(str(sym).upper())
+
+    special_sit_set: set[str] = {
+        (s.get("ticker") or s.get("symbol") or "").upper()
+        for s in phase1["Special-sit"] or []
+        if s.get("ticker") or s.get("symbol")
+    }
+
+    # Forensic verdict per ticker: re-use forensic_watch (red/amber names) +
+    # default to "clean" for anyone we DIDN'T flag. forensic_watch only
+    # surfaces composite ≥ 40, so absent-from-watch ≈ green/amber.
+    forensic_concern: Dict[str, str] = {
+        f["ticker"].upper(): f["verdict"]
+        for f in forensic_watch if f.get("ticker")
+    }
+
+    # Reverse-DCF + momentum per pick — run in parallel since each is ~1s
+    # warm. Targets the ~10-15 unique tickers across qv_picks + garp_picks.
+    target_tickers = set()
+    for p in (qv_picks or []) + (garp_picks or []):
+        t = (p.get("ticker") or "").upper()
+        if t:
+            target_tickers.add(t)
+    if sif and sif.get("ticker"):
+        target_tickers.add(sif["ticker"].upper())
+
+    from src.screens.reverse_dcf import analyze as _rdcf_analyze
+    from src.data.prices import PricesAdapter as _Prices
+    from src.screens.swing_setups import relative_strength_vs_index as _rs_vs_index
+
+    _prices_inst = _Prices()
+    _nifty = _safe(lambda: _prices_inst.history("^NSEI", period="200d"),
+                   "RS Nifty", errors, None)
+    _nifty_close = _nifty["Close"] if _nifty is not None and not _nifty.empty else None
+
+    def _enrich_one(ticker: str) -> Dict[str, Any]:
+        info: Dict[str, Any] = {"ticker": ticker}
+        try:
+            r = _rdcf_analyze(ticker)
+            info["dcf_verdict"] = r.verdict if r.fetched_ok else None
+        except Exception:
+            info["dcf_verdict"] = None
+        try:
+            df = _prices_inst.history(f"{ticker}.NS", period="200d")
+            if not df.empty and _nifty_close is not None:
+                rs = _rs_vs_index(df["Close"], _nifty_close, 90)
+                info["rs_90d"] = float(rs) if rs is not None else None
+            else:
+                info["rs_90d"] = None
+        except Exception:
+            info["rs_90d"] = None
+        return info
+
+    ticker_signals: Dict[str, Dict[str, Any]] = {}
+    if target_tickers:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex2:
+            futs = {ex2.submit(_enrich_one, t): t for t in target_tickers}
+            for fut in as_completed(futs):
+                ticker = futs[fut]
+                try:
+                    ticker_signals[ticker] = fut.result()
+                except Exception as exc:
+                    log.warning("conviction enrich %s failed: %s", ticker, exc)
+                    ticker_signals[ticker] = {"ticker": ticker}
+
+    # Brief history store — for delta_status + days_in_brief
+    from src.data.brief_history import BriefHistoryStore
+    history = BriefHistoryStore()
+
+    # Cross-screen membership — surface ticker appearing in BOTH Q+V and GARP
+    qv_tickers = {(p.get("ticker") or "").upper() for p in (qv_picks or [])}
+    garp_tickers = {(p.get("ticker") or "").upper() for p in (garp_picks or [])}
+    in_both_screens = (qv_tickers & garp_tickers) - {""}
+
+    def _enrich_picks(picks: List[Dict[str, Any]], section: str) -> List[Dict[str, Any]]:
+        for p in picks or []:
+            ticker = (p.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            sigs: List[str] = [section]   # the screen the pick came from is signal #1
+            if ticker in in_both_screens and section in ("qv", "garp"):
+                # Independent confirm: another screen also surfaced this name
+                other = "garp" if section == "qv" else "qv"
+                sigs.append(f"{other}_also")
+            if ticker in special_sit_set:
+                sigs.append("special_sit")
+            if ticker in smart_money_set:
+                sigs.append("smart_money_buy")
+            # forensic: clean unless flagged
+            fv = forensic_concern.get(ticker)
+            if fv is None:
+                sigs.append("forensic_clean")
+            elif fv == "amber":
+                sigs.append("forensic_amber")
+            # else red — DON'T add (skipping is the signal)
+            ts = ticker_signals.get(ticker, {})
+            if ts.get("dcf_verdict") == "cheap":
+                sigs.append("dcf_cheap")
+            rs = ts.get("rs_90d")
+            if rs is not None and rs > 0:
+                sigs.append("momentum_pos")
+            p["conviction_signals"] = sigs
+            p["conviction_count"] = len([s for s in sigs if s not in ("forensic_amber",)])
+
+            # Delta from history
+            try:
+                d = history.delta_for_ticker(ticker, today=today_iso)
+                p["delta_status"] = "new_today" if d.is_new else "persistent"
+                p["days_in_brief"] = d.days_in_brief
+            except Exception as exc:
+                log.warning("delta lookup %s failed: %s", ticker, exc)
+                p["delta_status"] = "unknown"
+                p["days_in_brief"] = None
+        return picks
+
+    qv_picks = _enrich_picks(qv_picks, "qv")
+    garp_picks = _enrich_picks(garp_picks, "garp")
+    if sif and sif.get("ticker"):
+        # Treat stock-in-focus as its own section for the history record
+        _enrich_picks([sif], "focus")
+
+    # Persist today's snapshot to history (will be queried tomorrow for delta).
+    # Save BEFORE enrichment-time delta lookup wouldn't change anything because
+    # delta_for_ticker looks at brief_history < today, not today.
+    try:
+        history.save_brief(today_iso, {
+            "qv": qv_picks,
+            "garp": garp_picks,
+            "focus": [sif] if sif and sif.get("ticker") else [],
+        })
+    except Exception as exc:
+        log.warning("brief history save failed: %s", exc)
+
     _step("✓ All data gathered")
 
     # All Phase 1 outputs come straight from the parallel dict — no re-running.
