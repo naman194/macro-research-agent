@@ -19,6 +19,7 @@ from src.agent.hc_publishing import (
 from src.config import DEFAULT_UNIVERSE
 from src.data.screener_premium import premium_status
 from src.screens.high_conviction import evaluate_high_conviction
+from src.ui.components import page_header
 
 
 @st.cache_data(ttl=3600, show_spinner="Running 6-layer composite filter…")
@@ -29,11 +30,12 @@ def _run(universe: tuple, require_uptrend: bool):
 
 
 def render() -> None:
-    st.header("📊 Composite Screen — Today's Filter Output")
-    st.caption(
-        "Strictest filter on the platform. A name appears here only if it passes ALL six layers. "
-        "Designed around a 6-12 month observation horizon. **This is descriptive filter output, "
-        "not a recommendation to buy or hold.**"
+    page_header(
+        "🎯 High Conviction — Today's Filter Output",
+        "Strictest filter on the platform. A name appears here only if it passes ALL seven "
+        "layers (fundamentals, structural overlay, technical setup, relative strength, "
+        "sentiment, macro regime, depth alignment). Designed around a 6-12 month observation "
+        "horizon. **This is descriptive filter output, not a recommendation to buy or hold.**",
     )
     st.warning(
         "⚠ **Not investment advice.** Filter outputs and composite scores are model outputs. "

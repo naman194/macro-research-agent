@@ -8,6 +8,7 @@ import streamlit as st
 
 from src.config import DEFAULT_UNIVERSE
 from src.screens.quality_value import QualityValueScreener
+from src.ui.components import page_header
 
 
 @st.cache_data(ttl=3600, show_spinner="Running screener…")
@@ -22,10 +23,11 @@ def _run_qv(universe: tuple) -> dict:
 
 
 def render() -> None:
-    st.header("Idea Generator — Quality + Value screen")
-    st.caption(
-        "Universe defaults to a curated 50-name subset of NIFTY 500. "
-        "Phase 2 expands to full 500."
+    page_header(
+        "Quality + Value screen",
+        "Buffett-flavoured filter — ROCE/ROE thresholds, low debt, consistent growth. "
+        "Universe defaults to a curated ~150-name subset of NIFTY 500. Composite score "
+        "incorporates structural risk/catalyst overlay.",
     )
 
     with st.expander("Screening criteria", expanded=False):

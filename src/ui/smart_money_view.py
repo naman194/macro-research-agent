@@ -6,6 +6,7 @@ import streamlit as st
 
 from src.data.deals import DealsAdapter
 from src.data.insider import InsiderAdapter
+from src.ui.components import page_header
 
 
 @st.cache_data(ttl=21600, show_spinner="Pulling bulk + block deals…")
@@ -34,11 +35,11 @@ def _value_color(val):
 
 
 def render() -> None:
-    st.header("Smart Money")
-    st.caption(
+    page_header(
+        "Smart Money",
         "Where institutional money actually moved yesterday — block deals (cleared via "
         "the negotiated window), bulk deals (>0.5% of float), and SEBI PIT insider/promoter "
-        "disclosures. Highest-conviction internal signals."
+        "disclosures. Highest-conviction internal signals.",
     )
 
     tab_block, tab_bulk, tab_insider = st.tabs(["Block Deals", "Bulk Deals", "Insider / Promoter"])

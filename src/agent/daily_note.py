@@ -33,6 +33,7 @@ from src.data.insider import InsiderAdapter
 from src.data.policy import RBIAdapter, SEBIAdapter
 from src.data.prices import PricesAdapter
 from src.data.worldbank import WorldBankAdapter
+from src.screens.forensics import analyze as forensic_analyze
 from src.screens.garp import GARPScreener
 from src.screens.quality_value import QualityValueScreener
 from src.screens.special_situations import SpecialSituationsScreener
@@ -154,6 +155,11 @@ actionable signal.
 ## Risk Watch
 - 2-3 bullets on what could derail today / this week. Be specific, not generic \
 ("Brent above $90 hurts paint/aviation margins" — not "geopolitical risk").
+- **If the supplied Forensic Watch payload is non-empty, add one bullet from it.** \
+Format: "**TICKER** — *specific red flag from `top_flags`* (forensic score X/100)". \
+This surfaces accounting-quality concerns on names the *screens love* or that *fell \
+yesterday* — not a sell signal, a "open the annual report before any action" call. \
+Skip if the payload is empty.
 
 ## Disclaimer
 Reproduce verbatim: "**This document is informational analysis, NOT investment advice or a \
@@ -213,6 +219,8 @@ class DailyNoteData:
     econ_calendar: List[Dict[str, Any]] = field(default_factory=list)
     rebalance_predictions: Dict[str, Any] = field(default_factory=dict)
     stock_in_focus: Dict[str, Any] = field(default_factory=dict)
+    # Phase 3 — forensic watch
+    forensic_watch: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
 
@@ -326,6 +334,41 @@ def gather() -> DailyNoteData:
     sif = _safe(lambda: build_focus(qv_picks, garp_picks),
                 "Stock-in-focus", errors, {})
 
+    # Phase 3: forensic watch — run accounting-quality forensics on
+    #   (a) top screen winners (catches "looks great on ratios, ugly under the hood")
+    #   (b) today's biggest losers (where quality erosion is starting to price in)
+    # Limited to ~25 names so the brief gathers in reasonable time.
+    def _forensics():
+        seeds = set()
+        for p in qv_picks[:10]:
+            if p.get("ticker"): seeds.add(p["ticker"].upper())
+        for p in garp_picks[:10]:
+            if p.get("ticker"): seeds.add(p["ticker"].upper())
+        for l in movers.get("losers", [])[:10]:
+            if l.get("symbol") or l.get("ticker"):
+                seeds.add((l.get("symbol") or l.get("ticker")).upper())
+        out = []
+        for t in list(seeds)[:25]:
+            try:
+                r = forensic_analyze(t)
+                if not r.fetched_ok or r.composite_score < 40:
+                    continue
+                # Top 2 red-flag notes per name keep prompt small
+                red_notes = [m.note for m in r.metrics.values() if m.verdict == "red"][:2]
+                out.append({
+                    "ticker": r.ticker,
+                    "score": r.composite_score,
+                    "verdict": r.verdict,
+                    "top_flags": red_notes,
+                    "headline": r.headline_flag,
+                })
+            except Exception as exc:
+                log.warning("forensic %s failed: %s", t, exc)
+        out.sort(key=lambda x: -x["score"])
+        return out[:5]
+
+    forensic_watch = _safe(_forensics, "Forensic watch", errors, [])
+
     return DailyNoteData(
         today=today,
         macro_fred=_safe(_fred, "FRED", errors, []),
@@ -356,6 +399,7 @@ def gather() -> DailyNoteData:
         econ_calendar=_safe(_econ, "Econ calendar", errors, []),
         rebalance_predictions=_safe(_rebalance, "Rebalance predictor", errors, {}),
         stock_in_focus=sif,
+        forensic_watch=forensic_watch,
         errors=errors,
     )
 
@@ -477,6 +521,14 @@ class DailyNoteAgent:
             "",
             "## Macro-theme news sentiment (GDELT, 14d)",
             "```json", json.dumps(d.theme_sentiment, indent=2, default=str), "```",
+            "",
+            "## Forensic Watch — earnings-quality red flags (composite ≥ 40)",
+            "Names from screen winners or today's losers that flunk the accounting-quality "
+            "battery (CFO/PAT, Sloan accruals, working-capital drift, debt-vs-profit "
+            "divergence, Beneish components). Surface 1-2 of these in **Risk Watch** with the "
+            "specific red flag — these are 'the financials look fine on ratios, but here's "
+            "what to check before the next results print' calls.",
+            "```json", json.dumps(d.forensic_watch, indent=2, default=str), "```",
         ]
         if d.errors:
             sections += [

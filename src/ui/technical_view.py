@@ -10,6 +10,7 @@ from src.agent.swing_charts import build_pick_chart
 from src.config import DEFAULT_UNIVERSE
 from src.data.prices import PricesAdapter
 from src.screens.swing_setups import SwingScanner, _compute_panel, obv_trend_score
+from src.ui.components import page_header
 
 
 @st.cache_data(ttl=1800, show_spinner="Scanning OHLCV + computing 8 indicators per name…")
@@ -94,12 +95,12 @@ def _render_chart_panel(picks: List[Dict[str, Any]], setup_label: str,
 
 
 def render() -> None:
-    st.header("Technical / Swing Trade Setups")
-    st.caption(
+    page_header(
+        "Technical / Swing Trade Setups",
         "Three strategies stacked: **Trend-Pullback** (high win-rate), **Base-Breakout** "
         "(asymmetric R:R), and **Volume-Breakout** (Wyckoff/Minervini institutional "
         "accumulation prints). Now backed by 8-indicator panel: SMA · RSI · MACD · ADX · "
-        "Bollinger · OBV · CMF · MFI · Relative-strength vs Nifty."
+        "Bollinger · OBV · CMF · MFI · Relative-strength vs Nifty.",
     )
 
     cols = st.columns([3, 1])

@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from src.screens.special_situations import SpecialSituationsScreener
+from src.ui.components import page_header
 
 
 @st.cache_data(ttl=21600, show_spinner="Scanning NSE events feed…")  # 6h
@@ -19,10 +20,10 @@ def _run(universe: tuple) -> dict:
 
 
 def render() -> None:
-    st.header("Special Situations — Event-driven Catalysts")
-    st.caption(
+    page_header(
+        "Special Situations — Event-driven Catalysts",
         "Buybacks, bonus, splits, fund-raising from the live NSE board-meeting feed. "
-        "Scored by event weight × proximity-to-date."
+        "Scored by event weight × proximity-to-date.",
     )
 
     restrict = st.checkbox("Restrict to my curated universe (NIFTY-50ish)", value=False)

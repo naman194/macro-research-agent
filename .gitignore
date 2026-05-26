@@ -6,6 +6,9 @@ __pycache__/
 .DS_Store
 data_cache/*.db
 data_cache/*.sqlite
+data_cache/*.json
 *.log
 .streamlit/secrets.toml
 .ipynb_checkpoints/
+.claude/
+nohup.out

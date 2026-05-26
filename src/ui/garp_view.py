@@ -6,6 +6,7 @@ import streamlit as st
 
 from src.config import DEFAULT_UNIVERSE
 from src.screens.garp import GARPScreener
+from src.ui.components import page_header
 
 
 @st.cache_data(ttl=3600, show_spinner="Running GARP screen…")
@@ -20,8 +21,10 @@ def _run(universe: tuple) -> dict:
 
 
 def render() -> None:
-    st.header("Idea Generator — GARP (Growth at Reasonable Price)")
-    st.caption("Lynch/Lipper-style: cheap (PEG ≤ 1.5) but growing (3y profit ≥ 12%).")
+    page_header(
+        "GARP — Growth at Reasonable Price",
+        "Lynch/Lipper-style: cheap (PEG ≤ 1.5) but growing (3y profit ≥ 12%).",
+    )
 
     meta = _run(tuple(DEFAULT_UNIVERSE))
 

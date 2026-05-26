@@ -18,6 +18,12 @@ A name only fires if ALL six layers align:
      GDELT 14d mean tone > -3 (no litigation / disaster cluster).
   L6 MACRO REGIME:
      Nifty above 200DMA (or use --force flag to override in research/backtest mode).
+  L7 DEPTH ALIGNMENT:
+     Forensic composite < 60 (not red on earnings-quality battery) AND reverse-DCF
+     verdict ≠ 'stretched' (market not pricing for perfection). High-conviction
+     means depth signals agree with the surface screen — a name that LOOKS great on
+     ratios but flunks the cash-flow / accruals tests, or one where the market is
+     already paying for 25% growth a sector has never delivered, does NOT clear.
 
 Output: top 3-5 picks per cycle. Recommended hold: 6-12 months. Position size: 3-5% / pick.
 """
@@ -34,6 +40,8 @@ from src.data.catalysts import catalyst_breakdown, company_catalysts
 from src.data.prices import PricesAdapter
 from src.data.screener import ScreenerAdapter
 from src.data.structural_risks import for_company, for_sector, penalty_breakdown
+from src.screens.forensics import analyze as _forensic_analyze
+from src.screens.reverse_dcf import analyze as _reverse_dcf_analyze
 from src.screens.swing_setups import (
     _compute_panel,
     _eval_base_breakout,
@@ -57,6 +65,12 @@ MIN_MCAP_CR = 5000
 #  - sector penalty <= 22.5 (avoid only the WORST-disrupted sectors: IT, Media)
 MIN_CATALYST_BONUS = 8.0
 MAX_SECTOR_PENALTY = 22.5
+# L7 — depth alignment thresholds
+MAX_FORENSIC_SCORE = 60.0       # skip if forensic composite ≥ 60 (red)
+# Reverse-DCF: skip if 'stretched' (market pricing in more growth than sector ceiling).
+# 'fair' and 'cheap' both pass. Names without a DCF verdict (financials, missing FCF)
+# pass — we don't penalise missing data.
+SKIP_DCF_VERDICTS = {"stretched"}
 
 
 @dataclass
@@ -87,6 +101,13 @@ class HighConvictionPick:
     # L4 / L5 momentum + sentiment
     rs_90d_pct: Optional[float]
     sentiment_tone: Optional[float]
+
+    # L7 depth alignment
+    forensic_score: Optional[float] = None
+    forensic_verdict: Optional[str] = None
+    dcf_verdict: Optional[str] = None
+    dcf_implied_growth_pct: Optional[float] = None
+    depth_bonus: float = 0.0
 
     # Reasoning
     why_high_conviction: List[str] = field(default_factory=list)
@@ -183,6 +204,38 @@ def evaluate_high_conviction(tickers: List[str],
         if tone is not None and tone < -3:
             continue
 
+        # L7 — depth alignment (earnings quality + reverse-DCF reality check).
+        # Skip names where the depth signals contradict the surface screen.
+        forensic_score = None
+        forensic_verdict = None
+        dcf_verdict = None
+        dcf_implied_pct = None
+        try:
+            fr = _forensic_analyze(ticker)
+            if fr.fetched_ok:
+                forensic_score = fr.composite_score
+                forensic_verdict = fr.verdict
+                if forensic_score is not None and forensic_score >= MAX_FORENSIC_SCORE:
+                    log.info("HC L7 skip %s — forensic %.1f red", ticker, forensic_score)
+                    continue
+        except Exception as exc:
+            log.debug("forensic fetch %s failed (continuing without L7 forensic gate): %s",
+                      ticker, exc)
+
+        try:
+            dr = _reverse_dcf_analyze(ticker)
+            if dr.fetched_ok:
+                dcf_verdict = dr.verdict
+                if dr.implied_growth is not None:
+                    dcf_implied_pct = round(dr.implied_growth * 100, 1)
+                if dcf_verdict in SKIP_DCF_VERDICTS:
+                    log.info("HC L7 skip %s — DCF verdict %s (priced for perfection)",
+                             ticker, dcf_verdict)
+                    continue
+        except Exception as exc:
+            log.debug("reverse_dcf fetch %s failed (continuing without DCF gate): %s",
+                      ticker, exc)
+
         # Composite conviction score
         # Fundamental quality (40%): ROCE+ROE balance, low debt, growth
         fund_score = (
@@ -202,7 +255,16 @@ def evaluate_high_conviction(tickers: List[str],
             sent_score = (min(max(tone, -3), 3) + 3) / 6 * 10
         else:
             sent_score = 5
-        conviction = round(fund_score + overlay_score + tech_score + rs_score + sent_score, 2)
+        base_conviction = fund_score + overlay_score + tech_score + rs_score + sent_score
+
+        # L7 depth bonus — only awarded when signals actively confirm (not just pass).
+        # Max +10 added on top of the 100-point base; final composite capped at 100.
+        depth_bonus = 0.0
+        if forensic_verdict == "green":
+            depth_bonus += 5
+        if dcf_verdict == "cheap":
+            depth_bonus += 5
+        conviction = round(min(base_conviction + depth_bonus, 100.0), 2)
 
         # Why high conviction (auto-generated reasoning bullets)
         why = []
@@ -213,6 +275,14 @@ def evaluate_high_conviction(tickers: List[str],
         if net_overlay >= 5: why.append(f"Sector + company tailwinds dominant (overlay +{net_overlay:.0f})")
         if rs_90 and rs_90 > 10: why.append(f"Clear leader vs Nifty (+{rs_90:.0f}% RS 90d)")
         if tone and tone > 1: why.append(f"Positive news flow (GDELT tone +{tone:.1f})")
+        if forensic_verdict == "green":
+            why.append(f"Earnings quality clean (forensic {forensic_score:.0f}/100)")
+        elif forensic_verdict == "amber":
+            why.append(f"Earnings quality watch-list (forensic {forensic_score:.0f}/100)")
+        if dcf_verdict == "cheap" and dcf_implied_pct is not None:
+            why.append(f"Market-implied growth {dcf_implied_pct}% below own track record")
+        elif dcf_verdict == "fair":
+            why.append("Market-implied growth fair vs history + sector ceiling")
         why.append(f"Technical entry confirmed: {setup}")
 
         picks.append(HighConvictionPick(
@@ -229,6 +299,11 @@ def evaluate_high_conviction(tickers: List[str],
             entry=cand.entry, stop_loss_suggested=cand.stop,
             rs_90d_pct=round(rs_90, 2) if rs_90 is not None else None,
             sentiment_tone=tone,
+            forensic_score=forensic_score,
+            forensic_verdict=forensic_verdict,
+            dcf_verdict=dcf_verdict,
+            dcf_implied_growth_pct=dcf_implied_pct,
+            depth_bonus=round(depth_bonus, 1),
             why_high_conviction=why,
         ))
 

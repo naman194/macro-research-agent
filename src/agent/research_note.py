@@ -41,6 +41,10 @@ management commentary or filing reference if available. Frame as "things to watc
 
 ## Valuation Picture
 - Current multiples (P/E, EV/EBITDA, P/B) vs 5y own median and sector median (factual).
+- **Reverse-DCF read** (if supplied): state market-implied long-term FCF growth, the 5y \
+historical growth, and the sector ceiling. Frame as "the market is paying for X% long-term \
+growth; the business has delivered Y% over 5 years; sector ceiling is Z%." Then a one-line \
+verdict — *cheap relative to track record* / *priced for perfection vs sector* / *fair*.
 - A model scenario range (bear/base/bull) using relative-multiple or DCF assumptions — clearly \
 labelled as model output, not a target price. Phrase as "if base assumptions hold, the model \
 implies a range of X-Y" — never "target price ₹X".
@@ -55,9 +59,19 @@ sensitive to assumptions.
 This section is MANDATORY. Argue the opposite case against the filter's positive signal. \
 Address each supplied sector structural risk (GenAI for IT, NIM compression for Banks, USFDA \
 for Pharma, EV transition for Auto, etc.) AND supplied company-specific risks. For each, mark \
-as: priced in / mispriced / unaddressed. If the historical valuation band may no longer be a \
-valid anchor (e.g. sector PE re-rating lower structurally), say so explicitly. End with: \
-"Filter status would shift if …" with 2 concrete triggers.
+as: priced in / mispriced / unaddressed.
+- **Forensic findings** (if supplied): cite the *specific* top flags from the forensic report \
+verbatim (e.g. "CFO/PAT 0.42 — debtor-stuffing or aggressive revenue recognition concern; \
+debt CAGR 22% vs profit CAGR 4%"). If the composite score is **red or amber**, the bear case \
+is not complete without addressing each red metric and stating whether it has a benign \
+explanation (e.g. ongoing capex cycle, recent acquisition working through the P&L) or whether \
+it should re-rate the downside.
+- **Management credibility** (if supplied): if the concall credibility score is below 50, note \
+the specific deterioration (tone whiplash, recurring unresolved concerns, guidance churn). \
+This is a SIGNAL about the reliability of the bull thesis, not just a side note.
+If the historical valuation band may no longer be a valid anchor (e.g. sector PE re-rating \
+lower structurally), say so explicitly. End with: "Filter status would shift if …" with 2 \
+concrete triggers.
 
 ## Bull Considerations — What Would Validate The Filter Signal
 This section is also MANDATORY. List supplied sector + company catalysts — for each, note \
@@ -110,6 +124,10 @@ class ResearchInput:
     sentiment: Optional[Dict[str, Any]] = None       # GDELT payload
     policy_items: Optional[List[Dict[str, Any]]] = None  # RBI + SEBI items
     special_situations: Optional[List[Dict[str, Any]]] = None  # event rows for this ticker
+    # Phase 3 — depth signals from the new modules
+    forensic_report: Optional[Dict[str, Any]] = None       # composite, verdict, top flags
+    reverse_dcf_report: Optional[Dict[str, Any]] = None    # implied growth vs historical
+    concall_credibility: Optional[Dict[str, Any]] = None   # management track-record summary
 
 
 class ResearchAgent:
@@ -215,6 +233,33 @@ class ResearchAgent:
                 "",
                 "## Active special-situation events for this ticker",
                 "```json", json.dumps(p.special_situations, indent=2, default=str), "```",
+            ]
+        if p.forensic_report:
+            sections += [
+                "",
+                "## Forensic / earnings-quality scan (composite 0-100, higher = more concern)",
+                "Cite the *specific red flags* verbatim in **Bear Considerations**. "
+                "If the composite is red or amber, the bear case must explain each red metric.",
+                "```json", json.dumps(p.forensic_report, indent=2, default=str), "```",
+            ]
+        if p.reverse_dcf_report:
+            sections += [
+                "",
+                "## Reverse-DCF — what the market is paying for",
+                "Use this in **Valuation Picture**. State the implied growth, vs the 5y "
+                "historical reference, vs the sector ceiling, and the verdict (cheap / fair "
+                "/ stretched).",
+                "```json", json.dumps(p.reverse_dcf_report, indent=2, default=str), "```",
+            ]
+        if p.concall_credibility:
+            sections += [
+                "",
+                "## Concall — management credibility (longitudinal)",
+                "If credibility_score is < 50, surface the specific deterioration in **Bear "
+                "Considerations** (tone whiplash / recurring concerns / guidance churn). "
+                "If ≥ 70 and there's a bull catalyst tied to management execution, this is "
+                "supporting evidence in **Bull Considerations**.",
+                "```json", json.dumps(p.concall_credibility, indent=2, default=str), "```",
             ]
         sections += [
             "",

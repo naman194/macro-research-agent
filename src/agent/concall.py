@@ -3,16 +3,12 @@
 Pipeline:
   1. User uploads concall transcript PDF (or pastes text)
   2. pypdf extracts text
-  3. Claude reads transcript + structured prompt → outputs analysis
-
-Output structure:
-  - Management tone (bullish / cautious / defensive / neutral)
-  - Guidance changes vs prior call
-  - Key positive surprises
-  - Key negative flags / concerns
-  - Notable Q&A — analyst pressure points and management answers
-  - Investment-relevant verbatim quotes
-  - What changed vs prior call (if prior context provided)
+  3. Claude reads transcript + structured prompt → outputs:
+     (a) Markdown analyst note (human-readable)
+     (b) JSON structured extraction (machine-readable: tone, guidance items,
+         concerns, positives, pressure points, verbatim quotes)
+  4. Structured extraction is persisted to concall_history.db, keyed
+     by (ticker, quarter), feeding the "Track Record" view.
 
 Best transcripts sourced from:
   - screener.in: https://www.screener.in/company/{TICKER}/consolidated/ → "Documents" tab
@@ -23,9 +19,11 @@ Best transcripts sourced from:
 from __future__ import annotations
 
 import io
+import json
 import logging
-from dataclasses import dataclass
-from typing import Optional
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 
@@ -79,14 +77,54 @@ recommendation to buy, sell or hold any security. The author is not a SEBI-regis
 Analyst or Investment Adviser. Verify all quotes and figures against the official company \
 transcript before any action.**"
 
+---
+
+AFTER the markdown analysis above, output one final block — a structured \
+JSON snapshot of the call, wrapped in `<structured>` XML tags. This is \
+persisted to a database and compared across quarters to build a management \
+credibility track-record. The JSON MUST conform to this schema:
+
+<structured>
+{
+  "tone": "bullish | confident | cautious | defensive | hesitant | neutral",
+  "net_assessment": "net_positive | net_neutral | net_negative",
+  "call_date": "YYYY-MM-DD or null if not stated in transcript",
+  "guidance": [
+    {
+      "metric": "revenue_growth | ebitda_margin | net_profit | capex | volume_growth | \
+new_orders | gross_margin | other (be specific in label)",
+      "label": "human label e.g. 'FY27 revenue growth band'",
+      "value": "e.g. '8-10%' or 'Rs 4,500 Cr' or '18-19%'",
+      "period": "e.g. 'FY27' or 'Q1FY27' or 'medium-term'",
+      "direction": "new | reiterated | raised | lowered | withdrawn",
+      "confidence": "high | medium | low (your read of how committed management seemed)"
+    }
+  ],
+  "concerns": ["short concern strings, 3-6 items"],
+  "positives": ["short positive strings, 3-6 items"],
+  "pressure_points": [
+    {"topic": "e.g. 'margin trajectory'", "exchange": "1-sentence summary of the push-back \
+or hedge"}
+  ],
+  "verbatim_quotes": [
+    {"speaker": "CEO / CFO / COO / EVP — Segment X", "quote": "exact text from transcript"}
+  ]
+}
+</structured>
+
+CRITICAL: every guidance item must include `value` and `period`. If management \
+withdrew prior guidance, record `direction: withdrawn` with `value: null`. If a \
+quarter's call gave NO numeric guidance, return `guidance: []` (do not invent).
+
 HARD RULES:
 - **No fabrication.** Only use what's in the transcript text.
 - **Use the speaker's exact words** for the verbatim quote section — institutional \
 clients verify these.
 - If transcript is incomplete or cut off, say so at the top.
-- Keep under 700 words total.
+- Keep markdown analysis under 700 words. The JSON block is in addition, not counted.
 - Match Indian institutional voice: "FY26E", "Q4FY26", "guidance revised down 100bps", \
 "capex spend Rs 4,500 Cr", "EBITDA margin band".
+- The `<structured>` block must be valid JSON. Validate it before returning.
 """
 
 
@@ -97,6 +135,46 @@ class ConcallInput:
     quarter: str          # e.g. "Q4 FY26"
     transcript_text: str  # raw text from PDF extract or paste
     prior_call_summary: Optional[str] = None  # optional — for delta analysis
+
+
+@dataclass
+class ConcallAnalysis:
+    """Both faces of a concall analysis: markdown for humans, JSON for the
+    longitudinal store."""
+    markdown: str
+    tone: Optional[str] = None
+    net_assessment: Optional[str] = None
+    call_date: Optional[str] = None
+    guidance: List[Dict[str, Any]] = field(default_factory=list)
+    concerns: List[str] = field(default_factory=list)
+    positives: List[str] = field(default_factory=list)
+    pressure_points: List[Dict[str, Any]] = field(default_factory=list)
+    verbatim_quotes: List[Dict[str, Any]] = field(default_factory=list)
+    parse_ok: bool = True
+    parse_error: Optional[str] = None
+
+
+_STRUCTURED_RX = re.compile(r"<structured>\s*(\{.*?\})\s*</structured>",
+                            re.DOTALL | re.IGNORECASE)
+
+
+def _split_markdown_and_structured(raw: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Pull out the JSON block. Returns (clean_markdown, parsed_json_or_None).
+    The JSON block is stripped from the returned markdown so users don't see it."""
+    m = _STRUCTURED_RX.search(raw or "")
+    if not m:
+        return raw, None
+    json_blob = m.group(1)
+    # Clean markdown = original minus the structured block
+    md = (raw[:m.start()] + raw[m.end():]).strip()
+    # Strip a trailing "---" separator if present
+    md = re.sub(r"\n*-{3,}\s*$", "", md).rstrip()
+    try:
+        parsed = json.loads(json_blob)
+        return md, parsed
+    except Exception as exc:
+        log.warning("structured JSON parse failed: %s", exc)
+        return md, None
 
 
 def extract_pdf_text(pdf_bytes: bytes) -> str:
@@ -135,9 +213,11 @@ class ConcallAgent:
     def available(self) -> bool:
         return self._client is not None
 
-    def analyze(self, payload: ConcallInput) -> str:
+    def analyze(self, payload: ConcallInput) -> ConcallAnalysis:
+        """Run the full analysis. Returns ConcallAnalysis with markdown + structured fields."""
         if not self.available:
-            return self._stub(payload)
+            return ConcallAnalysis(markdown=self._stub(payload),
+                                   parse_ok=False, parse_error="no anthropic key")
 
         # Cap transcript at ~140k chars (~35k tokens) to stay well under model limits
         text = payload.transcript_text or ""
@@ -156,17 +236,61 @@ class ConcallAgent:
         try:
             resp = self._client.messages.create(
                 model=ANTHROPIC_MODEL,
-                max_tokens=3000,
+                max_tokens=4000,
                 system=[{"type": "text", "text": CONCALL_SYSTEM,
                          "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user",
                            "content": [{"type": "text", "text": user_block}]}],
             )
             parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-            return "\n".join(parts).strip() or self._stub(payload)
+            raw = "\n".join(parts).strip()
+            if not raw:
+                return ConcallAnalysis(markdown=self._stub(payload),
+                                       parse_ok=False, parse_error="empty response")
+            md, parsed = _split_markdown_and_structured(raw)
+            if parsed is None:
+                return ConcallAnalysis(markdown=md or raw, parse_ok=False,
+                                       parse_error="structured JSON missing/invalid")
+            return ConcallAnalysis(
+                markdown=md or raw,
+                tone=parsed.get("tone"),
+                net_assessment=parsed.get("net_assessment"),
+                call_date=parsed.get("call_date"),
+                guidance=parsed.get("guidance") or [],
+                concerns=parsed.get("concerns") or [],
+                positives=parsed.get("positives") or [],
+                pressure_points=parsed.get("pressure_points") or [],
+                verbatim_quotes=parsed.get("verbatim_quotes") or [],
+                parse_ok=True,
+            )
         except Exception as exc:
             log.warning("concall analysis failed: %s", exc)
-            return f"_Concall analysis failed: {exc}_\n\n" + self._stub(payload)
+            return ConcallAnalysis(markdown=f"_Concall analysis failed: {exc}_\n\n"
+                                   + self._stub(payload),
+                                   parse_ok=False, parse_error=str(exc))
+
+    def analyze_and_persist(self, payload: ConcallInput) -> ConcallAnalysis:
+        """Run analysis AND persist structured extraction to concall_history.db.
+        Skipped on parse failure (we don't want garbage in the longitudinal store)."""
+        result = self.analyze(payload)
+        if result.parse_ok:
+            try:
+                from src.data.concall_archive import ConcallArchive, ConcallRecord
+                rec = ConcallRecord(
+                    ticker=payload.ticker, company_name=payload.company_name,
+                    quarter=payload.quarter, call_date=result.call_date,
+                    tone=result.tone, net_assessment=result.net_assessment,
+                    guidance=result.guidance, concerns=result.concerns,
+                    positives=result.positives,
+                    pressure_points=result.pressure_points,
+                    verbatim_quotes=result.verbatim_quotes,
+                    markdown_analysis=result.markdown,
+                    transcript_chars=len(payload.transcript_text or ""),
+                )
+                ConcallArchive().save(rec)
+            except Exception as exc:
+                log.warning("concall persistence failed: %s", exc)
+        return result
 
     @staticmethod
     def _stub(p: ConcallInput) -> str:

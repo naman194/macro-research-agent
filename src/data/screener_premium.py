@@ -132,11 +132,13 @@ class ScreenerPremiumAdapter(DataAdapter):
     # ============================================================
 
     def historical_financials(self, ticker: str) -> Dict[str, pd.DataFrame]:
-        """Extract 10y annual P&L + Balance Sheet from company page tables.
+        """Extract 10y annual P&L + Balance Sheet + Cash Flow from company page tables.
 
-        Returns dict with 'pnl' and 'balance_sheet' DataFrames (columns = years,
-        rows = line items). Works with free tier too but premium gives more reliable
-        slug resolution.
+        Returns dict with 'pnl', 'balance_sheet', and 'cashflow' DataFrames
+        (columns = years, rows = line items). Cash flow rows typically include
+        'Cash from Operating Activity', 'Cash from Investing Activity',
+        'Cash from Financing Activity', 'Net Cash Flow'. Works with free tier
+        too but premium gives more reliable slug resolution.
         """
         try:
             html = self._fetch_company_html(ticker, consolidated=True)
@@ -175,9 +177,16 @@ class ScreenerPremiumAdapter(DataAdapter):
                     return pd.DataFrame()
             return pd.DataFrame()
 
+        # screener.in's h2 is literally "Cash Flows" (plural). Some older
+        # pages used "Cash Flow Statement" — we match both.
+        cashflow_df = _parse_section("Cash Flows")
+        if cashflow_df.empty:
+            cashflow_df = _parse_section("Cash Flow")
+
         return {
             "pnl": _parse_section("Profit & Loss"),
             "balance_sheet": _parse_section("Balance Sheet"),
+            "cashflow": cashflow_df,
         }
 
     def historical_ratios(self, ticker: str) -> pd.DataFrame:

@@ -18,3 +18,4 @@ yfinance>=0.2.40
 matplotlib>=3.8
 # pandas-ta requires Python 3.12+; we compute indicators with pure pandas instead
 weasyprint>=66.0  # HTML→PDF rendering for the Claude-Design brief; uses system cairo/pango (see packages.txt)
+pypdf>=4.0  # concall transcript text extraction (src/agent/concall.py)

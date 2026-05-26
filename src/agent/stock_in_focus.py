@@ -25,8 +25,23 @@ from src.data.screener import ScreenerAdapter
 log = logging.getLogger(__name__)
 
 
+# Forensic red names disqualify themselves from being "stock in focus" —
+# the daily brief shouldn't anchor on a name where earnings quality is
+# questionable, however high it scored on ratios.
+FORENSIC_HARD_VETO = 60.0
+# DCF "stretched" is a softer veto — we down-rank but don't disqualify (the
+# user may still want to discuss it in the brief; it just shouldn't be the
+# anchor name).
+DCF_DOWNRANK_PENALTY = 15
+
+
 def pick_focus_ticker(qv_candidates: List[Dict], garp_candidates: List[Dict]) -> Optional[Dict]:
-    """Pick the single highest-scoring candidate across Q+V and GARP."""
+    """Pick the single highest-scoring candidate across Q+V and GARP, after a
+    forensic veto pass. Names flunking earnings-quality are removed even if
+    their surface score is highest — multi-signal alignment is the rule."""
+    from src.screens.forensics import analyze as _forensic_analyze
+    from src.screens.reverse_dcf import analyze as _reverse_dcf_analyze
+
     pool = []
     for c in qv_candidates:
         pool.append({**c, "_source": "Quality+Value"})
@@ -34,7 +49,44 @@ def pick_focus_ticker(qv_candidates: List[Dict], garp_candidates: List[Dict]) ->
         pool.append({**c, "_source": "GARP"})
     if not pool:
         return None
-    return max(pool, key=lambda x: x.get("score") or 0)
+
+    # Sort by surface score desc, then apply depth veto in order. First
+    # name that survives is the focus pick. This avoids running forensics on
+    # the whole pool unnecessarily.
+    pool.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    for cand in pool:
+        t = cand.get("ticker")
+        if not t:
+            continue
+        try:
+            fr = _forensic_analyze(t)
+            if fr.fetched_ok and fr.composite_score is not None \
+               and fr.composite_score >= FORENSIC_HARD_VETO:
+                log.info("Focus veto %s: forensic %.1f (red)", t, fr.composite_score)
+                continue
+            cand["_forensic"] = {"score": fr.composite_score, "verdict": fr.verdict,
+                                 "headline": fr.headline_flag} if fr.fetched_ok else None
+        except Exception as exc:
+            log.debug("focus-pick forensic %s failed: %s", t, exc)
+            cand["_forensic"] = None
+        try:
+            dr = _reverse_dcf_analyze(t)
+            if dr.fetched_ok and dr.implied_growth is not None:
+                cand["_dcf"] = {
+                    "verdict": dr.verdict,
+                    "implied_growth_pct": round(dr.implied_growth * 100, 1),
+                    "sales_cagr_5y_pct": (round(dr.historical_sales_cagr_5y * 100, 1)
+                                          if dr.historical_sales_cagr_5y is not None else None),
+                    "sector_ceiling_pct": (round(dr.sector_ceiling * 100, 0)
+                                           if dr.sector_ceiling is not None else None),
+                }
+            else:
+                cand["_dcf"] = {"verdict": dr.verdict, "note": dr.note} if dr.note else None
+        except Exception as exc:
+            log.debug("focus-pick dcf %s failed: %s", t, exc)
+            cand["_dcf"] = None
+        return cand  # first survivor wins
+    return None
 
 
 def render_chart_png(ticker: str, prices: Optional[PricesAdapter] = None) -> Optional[bytes]:
@@ -126,7 +178,8 @@ def render_markdown_block(focus: Dict[str, Any], fundamentals: Dict[str, Any],
     source = focus.get("_source", "screen")
     lines = [
         f"## Stock in Focus — {name} ({ticker})",
-        f"_Selected: top-scoring {source} candidate today (score {focus.get('score')})._",
+        f"_Selected: top-scoring {source} candidate today (score {focus.get('score')}) "
+        f"that cleared the earnings-quality / DCF veto._",
         "",
         "**Snapshot:**",
         f"- Price: ₹{fundamentals.get('current_price'):,.1f} · "
@@ -139,6 +192,34 @@ def render_markdown_block(focus: Dict[str, Any], fundamentals: Dict[str, Any],
         f"3y sales CAGR {fundamentals.get('sales_growth_3y')}%",
         "",
     ]
+
+    # Depth signals — forensic + reverse-DCF (set by pick_focus_ticker)
+    forensic = focus.get("_forensic") or {}
+    dcf_meta = focus.get("_dcf") or {}
+    if forensic or dcf_meta:
+        depth_bits = []
+        if forensic.get("verdict"):
+            badge = {"green":"🟢","amber":"🟠","red":"🔴"}.get(forensic["verdict"], "")
+            depth_bits.append(
+                f"Forensic {badge} **{forensic['verdict']}** "
+                f"({forensic.get('score','—')}/100)"
+                + (f" — {forensic['headline']}" if forensic.get("headline") else "")
+            )
+        if dcf_meta.get("verdict") and dcf_meta.get("implied_growth_pct") is not None:
+            badge = {"cheap":"🟢","fair":"⚪","stretched":"🔴"}.get(dcf_meta["verdict"], "")
+            ref_bits = []
+            if dcf_meta.get("sales_cagr_5y_pct") is not None:
+                ref_bits.append(f"5y CAGR {dcf_meta['sales_cagr_5y_pct']}%")
+            if dcf_meta.get("sector_ceiling_pct") is not None:
+                ref_bits.append(f"sector ceiling {int(dcf_meta['sector_ceiling_pct'])}%")
+            ref_str = (", ".join(ref_bits))
+            depth_bits.append(
+                f"Reverse-DCF {badge} **{dcf_meta['verdict']}** — market-implied "
+                f"growth **{dcf_meta['implied_growth_pct']}%**"
+                + (f" vs {ref_str}" if ref_str else "")
+            )
+        if depth_bits:
+            lines += ["**Depth signals:**"] + [f"- {b}" for b in depth_bits] + [""]
     if "error" not in dcf:
         lines += [
             "**Valuation range (relative-multiple approx):**",
