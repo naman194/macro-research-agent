@@ -1,6 +1,7 @@
 """Streamlit entry point — grouped navigation, Home dashboard, consistent chrome."""
 from __future__ import annotations
 
+import hashlib
 import os
 
 import streamlit as st
@@ -8,19 +9,43 @@ import streamlit as st
 
 # ---------------------------------------------------------------------------
 # Access control — only active when SHARED_PASSWORD env var is set.
-# Set this in your deployment (Railway / Render / etc.) to gate the app behind
-# a single shared password. Local dev with no env var = no gate (current behaviour).
-# Upgrade path: replace with streamlit-authenticator or put Cloudflare Access
-# in front of the deployment if you need per-user audit trails.
+#
+# Auth state lives in TWO places to survive WebSocket reconnects:
+#   1. st.session_state["_auth_ok"] — fast in-memory check
+#   2. st.query_params["auth"]      — a SHA-256 hash of the password kept in the
+#      URL. When Streamlit's WebSocket drops (long-running brief generation,
+#      Railway proxy idle timeout, tab refocus on mobile) and session_state
+#      resets, the token in the URL still re-authenticates without prompting.
+#
+# Security model: the URL token IS the access credential — sharing the URL
+# (after sign-in) is equivalent to sharing the password. Fine for a small,
+# trusted desk; not for retail-public exposure.
 # ---------------------------------------------------------------------------
 _SHARED_PW = os.getenv("SHARED_PASSWORD", "").strip()
+
+
+def _expected_token(pw: str) -> str:
+    # Salted SHA-256 truncated to 32 hex chars — short enough for a clean URL,
+    # long enough that brute force is infeasible.
+    return hashlib.sha256(("mra-v1:" + pw).encode("utf-8")).hexdigest()[:32]
+
+
 if _SHARED_PW:
-    st.set_page_config(
-        page_title="Macro Research Agent — Sign in",
-        page_icon=":lock:",
-        layout="centered",
-    )
+    expected = _expected_token(_SHARED_PW)
+    # If the URL carries the right token, accept it (survives reconnects).
+    try:
+        url_token = st.query_params.get("auth", "")
+    except Exception:
+        url_token = ""
+    if url_token == expected:
+        st.session_state["_auth_ok"] = True
+
     if not st.session_state.get("_auth_ok"):
+        st.set_page_config(
+            page_title="Macro Research Agent — Sign in",
+            page_icon=":lock:",
+            layout="centered",
+        )
         st.markdown("### Macro Research Agent")
         st.caption("Institutional research workbench — protected access.")
         with st.form("login"):
@@ -29,6 +54,12 @@ if _SHARED_PW:
         if ok:
             if pw == _SHARED_PW:
                 st.session_state["_auth_ok"] = True
+                # Persist the auth in the URL so WebSocket disconnects don't
+                # bounce the user back to the login screen.
+                try:
+                    st.query_params["auth"] = expected
+                except Exception:
+                    pass
                 st.rerun()
             else:
                 st.error("Incorrect password.")

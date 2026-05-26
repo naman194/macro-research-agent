@@ -47,6 +47,7 @@ SCREENER_SLUG_OVERRIDES = {
     "AARTI": "AARTIIND",
     "MAHANAGAR": "MGL",         # Mahanagar Gas
     "BLUESTAR": "BLUESTARCO",
+    "ZOMATO": "ETERNAL",        # Zomato rebranded to Eternal Ltd (Mar-2025)
 }
 
 ANTHROPIC_MODEL = "claude-opus-4-7"
