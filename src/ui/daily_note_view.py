@@ -83,14 +83,24 @@ def render() -> None:
         generate = st.button("📝 Generate today's morning brief", type="primary",
                              width="stretch")
     with cols[1]:
-        if st.button("🔄 Refresh data (clear cache)", width="stretch"):
-            _gather_payload.clear()
-            st.success("Cache cleared.")
+        refresh = st.button("🔄 Refresh data + regenerate", width="stretch",
+                            help="Clears all cached data sources and rebuilds the brief from "
+                                 "live NSE / FRED / screener / GDELT / RBI feeds. Takes 60-90s.")
+    if refresh:
+        _gather_payload.clear()
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        st.toast("Cache cleared — regenerating now…", icon="🔄")
+        # Fall through to generation logic — treat refresh as an explicit Generate.
+        generate = True
 
     if not generate:
         st.info(
             "Click **Generate** to build today's brief. First run ~60-90 seconds. "
-            "Re-runs instant for 30 minutes."
+            "Re-runs instant for 30 minutes. Use **Refresh data + regenerate** to bypass "
+            "the cache and pull fresh from every data source."
         )
         return
 
